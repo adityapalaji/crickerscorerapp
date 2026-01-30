@@ -1,0 +1,1253 @@
+import { useEffect, useMemo, useState } from "react";
+import { useLocation, useRoute } from "wouter";
+import { motion } from "framer-motion";
+import {
+  ArrowLeft,
+  Copy,
+  Crown,
+  Eye,
+  RotateCcw,
+  Share2,
+  Shield,
+  Undo2,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
+
+type Role = "admin" | "viewer";
+
+type BallEventType =
+  | "dot"
+  | "run"
+  | "wicket"
+  | "wide"
+  | "noball"
+  | "bye"
+  | "legbye";
+
+type BallEvent = {
+  id: string;
+  ts: number;
+  type: BallEventType;
+  runs: number;
+  countsBall: boolean;
+  isWicket?: boolean;
+  note?: string;
+};
+
+type Innings = {
+  id: string;
+  battingTeamId: string;
+  bowlingTeamId: string;
+  runs: number;
+  wickets: number;
+  balls: number; // legal balls
+  extras: {
+    wide: number;
+    noball: number;
+    bye: number;
+    legbye: number;
+  };
+  striker: string;
+  nonStriker: string;
+  bowler: string;
+  overEvents: BallEvent[];
+  lastOverSummary: BallEvent[];
+};
+
+type MatchState = {
+  version: number;
+  matchId: string;
+  createdAt: number;
+  updatedAt: number;
+
+  title: string;
+  venue: string;
+
+  teams: {
+    a: { id: "a"; name: string };
+    b: { id: "b"; name: string };
+  };
+
+  oversLimit: number;
+
+  inningsIndex: number;
+  innings: Innings[];
+
+  status: "setup" | "live" | "innings_break" | "completed";
+
+  adminKey: string; // used only to gate UI locally + share link
+  history: { snapshots: MatchState[] };
+};
+
+const STORAGE_PREFIX = "ic_scoring_match_v1:";
+
+function uid(prefix = "id") {
+  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
+}
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function formatOvers(balls: number) {
+  const o = Math.floor(balls / 6);
+  const b = balls % 6;
+  return `${o}.${b}`;
+}
+
+function totalExtras(extras: Innings["extras"]) {
+  return extras.wide + extras.noball + extras.bye + extras.legbye;
+}
+
+function getLocalKey(matchId: string) {
+  return `${STORAGE_PREFIX}${matchId}`;
+}
+
+function saveMatch(state: MatchState) {
+  try {
+    localStorage.setItem(getLocalKey(state.matchId), JSON.stringify(state));
+  } catch {
+    // ignore
+  }
+}
+
+function loadMatch(matchId: string): MatchState | null {
+  try {
+    const raw = localStorage.getItem(getLocalKey(matchId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as MatchState;
+    if (!parsed || parsed.version !== 1) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function defaultMatch(matchId?: string): MatchState {
+  const id = matchId ?? uid("match");
+  const adminKey = uid("admin");
+
+  const baseInnings: Innings = {
+    id: uid("inn"),
+    battingTeamId: "a",
+    bowlingTeamId: "b",
+    runs: 0,
+    wickets: 0,
+    balls: 0,
+    extras: { wide: 0, noball: 0, bye: 0, legbye: 0 },
+    striker: "Batter 1",
+    nonStriker: "Batter 2",
+    bowler: "Bowler 1",
+    overEvents: [],
+    lastOverSummary: [],
+  };
+
+  const state: MatchState = {
+    version: 1,
+    matchId: id,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+
+    title: "Indoor Cricket",
+    venue: "Court 1",
+
+    teams: {
+      a: { id: "a", name: "Team A" },
+      b: { id: "b", name: "Team B" },
+    },
+
+    oversLimit: 8,
+
+    inningsIndex: 0,
+    innings: [baseInnings],
+
+    status: "setup",
+
+    adminKey,
+    history: { snapshots: [] },
+  };
+
+  return state;
+}
+
+function pushHistory(state: MatchState) {
+  const snap = structuredClone(state);
+  snap.history = { snapshots: [] };
+  const next: MatchState = {
+    ...state,
+    history: {
+      snapshots: [snap, ...state.history.snapshots].slice(0, 60),
+    },
+  };
+  return next;
+}
+
+function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
+  const next: Innings = {
+    ...inn,
+    runs: inn.runs + ev.runs,
+    wickets: inn.wickets + (ev.isWicket ? 1 : 0),
+    balls: inn.balls + (ev.countsBall ? 1 : 0),
+    overEvents: [...inn.overEvents, ev],
+  };
+
+  if (ev.type === "wide") next.extras = { ...next.extras, wide: next.extras.wide + ev.runs };
+  if (ev.type === "noball") next.extras = { ...next.extras, noball: next.extras.noball + ev.runs };
+  if (ev.type === "bye") next.extras = { ...next.extras, bye: next.extras.bye + ev.runs };
+  if (ev.type === "legbye") next.extras = { ...next.extras, legbye: next.extras.legbye + ev.runs };
+
+  if (next.balls % 6 === 0 && next.overEvents.length) {
+    next.lastOverSummary = next.overEvents;
+    next.overEvents = [];
+  }
+
+  return next;
+}
+
+function eventLabel(ev: BallEvent) {
+  if (ev.type === "wicket") return "W";
+  if (ev.type === "dot") return "•";
+  if (ev.type === "wide") return `Wd+${ev.runs}`;
+  if (ev.type === "noball") return `Nb+${ev.runs}`;
+  if (ev.type === "bye") return `B+${ev.runs}`;
+  if (ev.type === "legbye") return `Lb+${ev.runs}`;
+  return `${ev.runs}`;
+}
+
+function pillTone(ev: BallEvent) {
+  if (ev.type === "wicket") return "bg-destructive text-destructive-foreground";
+  if (ev.type === "wide" || ev.type === "noball") return "bg-accent text-accent-foreground";
+  if (ev.type === "dot") return "bg-secondary text-secondary-foreground";
+  if (ev.runs >= 4) return "bg-primary text-primary-foreground";
+  return "bg-card text-foreground border";
+}
+
+function getQueryParam(search: string, key: string) {
+  const params = new URLSearchParams(search.startsWith("?") ? search : `?${search}`);
+  return params.get(key);
+}
+
+function setQueryParam(search: string, key: string, value: string | null) {
+  const params = new URLSearchParams(search.startsWith("?") ? search : `?${search}`);
+  if (value === null) params.delete(key);
+  else params.set(key, value);
+  const next = params.toString();
+  return next ? `?${next}` : "";
+}
+
+function buildViewerLink(matchId: string) {
+  return `${window.location.origin}/match/${encodeURIComponent(matchId)}?mode=viewer`;
+}
+
+function buildAdminLink(matchId: string, adminKey: string) {
+  return `${window.location.origin}/match/${encodeURIComponent(matchId)}?mode=admin&key=${encodeURIComponent(adminKey)}`;
+}
+
+export default function ScoringApp() {
+  const { toast } = useToast();
+  const [, params] = useRoute("/match/:matchId");
+  const [location, setLocation] = useLocation();
+
+  const matchIdFromRoute = params?.matchId;
+  const url = useMemo(() => new URL(window.location.href), [location]);
+
+  const roleFromUrl = (getQueryParam(url.search, "mode") as Role | null) ?? "admin";
+  const keyFromUrl = getQueryParam(url.search, "key");
+
+  const [state, setState] = useState<MatchState>(() => {
+    const matchId = matchIdFromRoute ?? "default";
+    const stored = loadMatch(matchId);
+    const seed = stored ?? defaultMatch(matchId === "default" ? undefined : matchId);
+    return seed;
+  });
+
+  const role: Role = useMemo(() => {
+    if (roleFromUrl === "viewer") return "viewer";
+    if (!keyFromUrl) return "viewer";
+    return keyFromUrl === state.adminKey ? "admin" : "viewer";
+  }, [roleFromUrl, keyFromUrl, state.adminKey]);
+
+  const isAdmin = role === "admin";
+
+  const currentInnings = state.innings[state.inningsIndex];
+
+  const targetText = useMemo(() => {
+    if (state.inningsIndex === 1) {
+      const first = state.innings[0];
+      return `Target: ${first.runs + 1}`;
+    }
+    return "";
+  }, [state.inningsIndex, state.innings]);
+
+  const matchStatusText = useMemo(() => {
+    if (state.status === "setup") return "Ready to start";
+    if (state.status === "live") return "Live";
+    if (state.status === "innings_break") return "Innings break";
+    return "Completed";
+  }, [state.status]);
+
+  useEffect(() => {
+    const next: MatchState = { ...state, updatedAt: Date.now() };
+    saveMatch(next);
+  }, [state]);
+
+  useEffect(() => {
+    if (!matchIdFromRoute) {
+      const next = `/match/${encodeURIComponent(state.matchId)}${url.search}`;
+      setLocation(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchIdFromRoute, state.matchId]);
+
+  function safeSet(next: MatchState) {
+    setState({ ...next, updatedAt: Date.now() });
+  }
+
+  function startMatch() {
+    safeSet({ ...pushHistory(state), status: "live" });
+  }
+
+  function resetMatch() {
+    const fresh = defaultMatch(state.matchId);
+    safeSet(fresh);
+    toast({ title: "Match reset", description: "Started fresh match state." });
+  }
+
+  function startNewMatch() {
+    const fresh = defaultMatch(undefined);
+    safeSet(fresh);
+    setLocation(buildAdminLink(fresh.matchId, fresh.adminKey).replace(window.location.origin, ""), {
+      replace: true,
+    });
+    toast({ title: "New match created", description: "Share the viewer link for spectators." });
+  }
+
+  function undo() {
+    const [latest, ...rest] = state.history.snapshots;
+    if (!latest) return;
+    const restored: MatchState = {
+      ...latest,
+      history: { snapshots: rest },
+      updatedAt: Date.now(),
+    };
+    safeSet(restored);
+  }
+
+  function setTeams(a: string, b: string) {
+    safeSet(
+      pushHistory({
+        ...state,
+        teams: { a: { id: "a", name: a }, b: { id: "b", name: b } },
+      }),
+    );
+  }
+
+  function setMeta(title: string, venue: string) {
+    safeSet(pushHistory({ ...state, title, venue }));
+  }
+
+  function setPlayers(striker: string, nonStriker: string, bowler: string) {
+    const inn = state.innings[state.inningsIndex];
+    const updated: Innings = { ...inn, striker, nonStriker, bowler };
+    const innings = [...state.innings];
+    innings[state.inningsIndex] = updated;
+    safeSet(pushHistory({ ...state, innings }));
+  }
+
+  function swapBatters() {
+    const inn = state.innings[state.inningsIndex];
+    setPlayers(inn.nonStriker, inn.striker, inn.bowler);
+  }
+
+  function toggleTeamsForNextInnings() {
+    const prev = state.innings[state.inningsIndex];
+    const nextInnings: Innings = {
+      id: uid("inn"),
+      battingTeamId: prev.bowlingTeamId,
+      bowlingTeamId: prev.battingTeamId,
+      runs: 0,
+      wickets: 0,
+      balls: 0,
+      extras: { wide: 0, noball: 0, bye: 0, legbye: 0 },
+      striker: "Batter 1",
+      nonStriker: "Batter 2",
+      bowler: "Bowler 1",
+      overEvents: [],
+      lastOverSummary: [],
+    };
+
+    safeSet(
+      pushHistory({
+        ...state,
+        innings: [...state.innings, nextInnings],
+        inningsIndex: state.inningsIndex + 1,
+        status: "live",
+      }),
+    );
+  }
+
+  function endInnings() {
+    safeSet(pushHistory({ ...state, status: "innings_break" }));
+  }
+
+  function addEvent(ev: BallEvent) {
+    const inn = state.innings[state.inningsIndex];
+    const updatedInn = applyBallEvent(inn, ev);
+
+    const innings = [...state.innings];
+    innings[state.inningsIndex] = updatedInn;
+
+    safeSet(pushHistory({ ...state, innings, status: "live" }));
+  }
+
+  function addRun(runs: number) {
+    addEvent({
+      id: uid("ball"),
+      ts: Date.now(),
+      type: runs === 0 ? "dot" : "run",
+      runs,
+      countsBall: true,
+    });
+  }
+
+  function addWicket() {
+    addEvent({
+      id: uid("ball"),
+      ts: Date.now(),
+      type: "wicket",
+      runs: 0,
+      countsBall: true,
+      isWicket: true,
+    });
+  }
+
+  function addExtra(type: "wide" | "noball" | "bye" | "legbye", runs: number) {
+    addEvent({
+      id: uid("ball"),
+      ts: Date.now(),
+      type,
+      runs,
+      countsBall: type === "bye" || type === "legbye",
+    });
+  }
+
+  const battingName =
+    currentInnings.battingTeamId === "a" ? state.teams.a.name : state.teams.b.name;
+  const bowlingName =
+    currentInnings.bowlingTeamId === "a" ? state.teams.a.name : state.teams.b.name;
+
+  const overPills = currentInnings.overEvents;
+  const lastOverPills = currentInnings.lastOverSummary;
+
+  const totalScore = `${currentInnings.runs}/${currentInnings.wickets}`;
+  const oversText = `${formatOvers(currentInnings.balls)} ov`;
+  const extrasText = totalExtras(currentInnings.extras);
+
+  const isOverLimitReached = Math.floor(currentInnings.balls / 6) >= clamp(state.oversLimit, 1, 50);
+
+  const viewerLink = useMemo(() => buildViewerLink(state.matchId), [state.matchId]);
+  const adminLink = useMemo(() => buildAdminLink(state.matchId, state.adminKey), [state.matchId, state.adminKey]);
+
+  async function copy(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast({ title: "Copied", description: label });
+    } catch {
+      toast({ title: "Couldn’t copy", description: text });
+    }
+  }
+
+  const headerChip =
+    role === "admin" ? (
+      <span
+        className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 text-primary px-2.5 py-1 text-xs font-semibold"
+        data-testid="status-role-admin"
+      >
+        <Crown className="h-3.5 w-3.5" /> Scorer
+      </span>
+    ) : (
+      <span
+        className="inline-flex items-center gap-1.5 rounded-full bg-secondary text-secondary-foreground px-2.5 py-1 text-xs font-semibold"
+        data-testid="status-role-viewer"
+      >
+        <Eye className="h-3.5 w-3.5" /> Viewer
+      </span>
+    );
+
+  return (
+    <div className="app-shell min-h-screen">
+      <div className="mx-auto w-full max-w-6xl px-3 sm:px-6 py-4 sm:py-8">
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, ease: "easeOut" }}
+          className="flex items-start justify-between gap-3"
+        >
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h1 className="font-display text-2xl sm:text-3xl tracking-tight" data-testid="text-app-title">
+                Indoor Cricket Scorer
+              </h1>
+              {headerChip}
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground" data-testid="text-app-subtitle">
+              Live scoring • touch-first controls • shareable viewer link
+            </p>
+          </div>
+
+          {matchIdFromRoute ? (
+            <Button
+              variant="secondary"
+              className="tap pressable"
+              onClick={() => setLocation("/", { replace: false })}
+              data-testid="button-back-home"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              <span className="hidden sm:inline">Home</span>
+            </Button>
+          ) : null}
+        </motion.div>
+
+        <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-6">
+          <div className="lg:col-span-7 space-y-3 sm:space-y-6">
+            <Card className="glass p-4 sm:p-6">
+              <div className="flex flex-col gap-3 sm:gap-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p
+                      className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                      data-testid="text-match-label"
+                    >
+                      {state.title} • {state.venue}
+                    </p>
+                    <div className="mt-1 flex flex-wrap items-end gap-x-3 gap-y-1">
+                      <div className="font-display text-4xl sm:text-5xl leading-none" data-testid="text-score">
+                        {totalScore}
+                      </div>
+                      <div className="pb-1">
+                        <div className="text-sm font-semibold" data-testid="text-overs">
+                          {oversText}
+                        </div>
+                        <div className="text-xs text-muted-foreground" data-testid="text-extras">
+                          Extras: {extrasText}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span
+                        className={cn(
+                          "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold",
+                          state.status === "live" ? "bg-primary/10 text-primary" : "bg-secondary text-secondary-foreground",
+                        )}
+                        data-testid="status-match"
+                      >
+                        <Shield className="h-3.5 w-3.5 mr-1" /> {matchStatusText}
+                      </span>
+                      <span
+                        className="inline-flex items-center rounded-full bg-card/60 border px-2.5 py-1 text-xs font-semibold"
+                        data-testid="status-innings"
+                      >
+                        Innings {state.inningsIndex + 1} • {battingName} batting
+                      </span>
+                      {targetText ? (
+                        <span
+                          className="inline-flex items-center rounded-full bg-accent/10 text-accent px-2.5 py-1 text-xs font-semibold"
+                          data-testid="status-target"
+                        >
+                          {targetText}
+                        </span>
+                      ) : null}
+                      <span
+                        className="inline-flex items-center rounded-full bg-card/60 border px-2.5 py-1 text-xs font-semibold"
+                        data-testid="status-overs-limit"
+                      >
+                        {state.oversLimit} ov match
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col items-end gap-2">
+                    <Button
+                      variant="outline"
+                      className="tap pressable"
+                      onClick={() => copy(viewerLink, "Viewer link copied")}
+                      data-testid="button-copy-viewer-link"
+                    >
+                      <Share2 className="h-4 w-4" />
+                      <span className="hidden sm:inline">Share viewer</span>
+                    </Button>
+                    {isAdmin ? (
+                      <Button
+                        variant="outline"
+                        className="tap pressable"
+                        onClick={() => copy(adminLink, "Admin link copied")}
+                        data-testid="button-copy-admin-link"
+                      >
+                        <Copy className="h-4 w-4" />
+                        <span className="hidden sm:inline">Copy admin</span>
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <Card className="bg-card/60 border p-3">
+                    <p
+                      className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                      data-testid="text-batting-label"
+                    >
+                      Batting
+                    </p>
+                    <p className="mt-1 font-semibold" data-testid="text-batting-team">
+                      {battingName}
+                    </p>
+                    <p className="text-xs text-muted-foreground" data-testid="text-batters">
+                      {currentInnings.striker} (str) • {currentInnings.nonStriker} (ns)
+                    </p>
+                  </Card>
+                  <Card className="bg-card/60 border p-3">
+                    <p
+                      className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                      data-testid="text-bowling-label"
+                    >
+                      Bowling
+                    </p>
+                    <p className="mt-1 font-semibold" data-testid="text-bowling-team">
+                      {bowlingName}
+                    </p>
+                    <p className="text-xs text-muted-foreground" data-testid="text-bowler">
+                      {currentInnings.bowler}
+                    </p>
+                  </Card>
+                  <Card className="bg-card/60 border p-3">
+                    <p
+                      className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                      data-testid="text-over-label"
+                    >
+                      This over
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1" data-testid="list-over-pills">
+                      {(
+                        overPills.length
+                          ? overPills
+                          : ([{ id: "empty", ts: 0, type: "dot", runs: 0, countsBall: true }] as BallEvent[])
+                      ).map((ev, idx) => (
+                        <span
+                          key={`${ev.id}_${idx}`}
+                          className={cn(
+                            "inline-flex items-center justify-center rounded-full px-2 py-1 text-xs font-semibold",
+                            idx === 0 && ev.id === "empty" ? "bg-secondary text-secondary-foreground" : pillTone(ev),
+                          )}
+                          data-testid={`pill-over-${idx}`}
+                        >
+                          {idx === 0 && ev.id === "empty" ? "—" : eventLabel(ev)}
+                        </span>
+                      ))}
+                    </div>
+                    {lastOverPills.length ? (
+                      <p className="mt-2 text-xs text-muted-foreground" data-testid="text-last-over">
+                        Last over: {lastOverPills.map(eventLabel).join(" ")}
+                      </p>
+                    ) : null}
+                  </Card>
+                </div>
+
+                {!isAdmin ? (
+                  <div className="rounded-xl border bg-card/60 p-3 text-sm" data-testid="panel-viewer-readonly">
+                    You’re in <span className="font-semibold">Viewer</span> mode. Scores update live on this device as the
+                    scorer changes them.
+                  </div>
+                ) : null}
+              </div>
+            </Card>
+
+            <Card className="glass p-4 sm:p-6">
+              <Tabs defaultValue="controls">
+                <div className="flex items-center justify-between gap-3">
+                  <TabsList className="bg-card/60 border" data-testid="tabs-admin">
+                    <TabsTrigger value="controls" data-testid="tab-controls">
+                      Controls
+                    </TabsTrigger>
+                    <TabsTrigger value="players" data-testid="tab-players">
+                      Players
+                    </TabsTrigger>
+                    <TabsTrigger value="match" data-testid="tab-match">
+                      Match
+                    </TabsTrigger>
+                  </TabsList>
+
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="secondary"
+                      className="tap pressable"
+                      disabled={!isAdmin || state.history.snapshots.length === 0}
+                      onClick={undo}
+                      data-testid="button-undo"
+                    >
+                      <Undo2 className="h-4 w-4" /> Undo
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="tap pressable"
+                      disabled={!isAdmin}
+                      onClick={resetMatch}
+                      data-testid="button-reset"
+                    >
+                      <RotateCcw className="h-4 w-4" /> Reset
+                    </Button>
+                  </div>
+                </div>
+
+                <TabsContent value="controls" className="mt-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3">
+                    <BigButton label="0" sub="Dot" tone="secondary" disabled={!isAdmin} onClick={() => addRun(0)} testId="button-run-0" />
+                    <BigButton label="1" sub="Run" tone="primary" disabled={!isAdmin} onClick={() => addRun(1)} testId="button-run-1" />
+                    <BigButton label="2" sub="Runs" tone="primary" disabled={!isAdmin} onClick={() => addRun(2)} testId="button-run-2" />
+                    <BigButton label="3" sub="Runs" tone="primary" disabled={!isAdmin} onClick={() => addRun(3)} testId="button-run-3" />
+                    <BigButton label="4" sub="Boundary" tone="accent" disabled={!isAdmin} onClick={() => addRun(4)} testId="button-run-4" />
+                    <BigButton label="6" sub="Max" tone="accent" disabled={!isAdmin} onClick={() => addRun(6)} testId="button-run-6" />
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+                    <BigButton label="W" sub="Wicket" tone="danger" disabled={!isAdmin} onClick={addWicket} testId="button-wicket" />
+                    <SmallStepper title="Wide" onAdd={(n) => addExtra("wide", n)} disabled={!isAdmin} testBase="wide" />
+                    <SmallStepper title="No ball" onAdd={(n) => addExtra("noball", n)} disabled={!isAdmin} testBase="noball" />
+                    <SmallStepper
+                      title="Bye/LB"
+                      onAdd={(n) => addExtra("bye", n)}
+                      disabled={!isAdmin}
+                      testBase="bye"
+                      alt
+                      altAction={(n) => addExtra("legbye", n)}
+                      altLabel="Leg bye"
+                    />
+                  </div>
+
+                  <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        className="tap pressable"
+                        disabled={!isAdmin}
+                        onClick={swapBatters}
+                        data-testid="button-swap-batters"
+                      >
+                        Swap batters
+                      </Button>
+                      <div className="flex items-center gap-2 rounded-xl border bg-card/60 px-3 py-2">
+                        <span className="text-sm font-semibold" data-testid="text-over-limit">
+                          Over limit
+                        </span>
+                        <span className="text-sm text-muted-foreground" data-testid="text-over-limit-value">
+                          {state.oversLimit}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {state.status !== "live" ? (
+                        <Button className="tap pressable" disabled={!isAdmin} onClick={startMatch} data-testid="button-start">
+                          Start / Resume
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="secondary"
+                          className="tap pressable"
+                          disabled={!isAdmin}
+                          onClick={endInnings}
+                          data-testid="button-end-innings"
+                        >
+                          End innings
+                        </Button>
+                      )}
+
+                      <Button
+                        variant="outline"
+                        className="tap pressable"
+                        disabled={!isAdmin || !isOverLimitReached}
+                        onClick={toggleTeamsForNextInnings}
+                        data-testid="button-next-innings"
+                      >
+                        Next innings
+                      </Button>
+                    </div>
+                  </div>
+
+                  {!isAdmin ? (
+                    <p className="mt-3 text-xs text-muted-foreground" data-testid="text-readonly-hint">
+                      Ask the scorer for an admin link if you need to update the score.
+                    </p>
+                  ) : null}
+                </TabsContent>
+
+                <TabsContent value="players" className="mt-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <Field
+                      label="Striker"
+                      value={currentInnings.striker}
+                      disabled={!isAdmin}
+                      onChange={(v) => setPlayers(v, currentInnings.nonStriker, currentInnings.bowler)}
+                      testId="input-striker"
+                    />
+                    <Field
+                      label="Non-striker"
+                      value={currentInnings.nonStriker}
+                      disabled={!isAdmin}
+                      onChange={(v) => setPlayers(currentInnings.striker, v, currentInnings.bowler)}
+                      testId="input-nonstriker"
+                    />
+                    <Field
+                      label="Bowler"
+                      value={currentInnings.bowler}
+                      disabled={!isAdmin}
+                      onChange={(v) => setPlayers(currentInnings.striker, currentInnings.nonStriker, v)}
+                      testId="input-bowler"
+                    />
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="match" className="mt-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Field
+                      label="Match title"
+                      value={state.title}
+                      disabled={!isAdmin}
+                      onChange={(v) => setMeta(v, state.venue)}
+                      testId="input-title"
+                    />
+                    <Field
+                      label="Venue"
+                      value={state.venue}
+                      disabled={!isAdmin}
+                      onChange={(v) => setMeta(state.title, v)}
+                      testId="input-venue"
+                    />
+                    <Field
+                      label="Team A"
+                      value={state.teams.a.name}
+                      disabled={!isAdmin}
+                      onChange={(v) => setTeams(v, state.teams.b.name)}
+                      testId="input-team-a"
+                    />
+                    <Field
+                      label="Team B"
+                      value={state.teams.b.name}
+                      disabled={!isAdmin}
+                      onChange={(v) => setTeams(state.teams.a.name, v)}
+                      testId="input-team-b"
+                    />
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <OverLimitControl
+                      value={state.oversLimit}
+                      disabled={!isAdmin}
+                      onChange={(v) => safeSet(pushHistory({ ...state, oversLimit: clamp(v, 1, 50) }))}
+                    />
+
+                    <Card className="bg-card/60 border p-3 sm:col-span-2">
+                      <p className="text-sm font-semibold" data-testid="text-share-heading">
+                        Share links
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground" data-testid="text-share-sub">
+                        Viewer is read-only. Admin requires the key.
+                      </p>
+                      <div className="mt-3 flex flex-col gap-2">
+                        <div className="flex gap-2">
+                          <Button
+                            variant="secondary"
+                            className="tap pressable w-full justify-center"
+                            onClick={() => copy(viewerLink, "Viewer link copied")}
+                            data-testid="button-share-viewer"
+                          >
+                            <Eye className="h-4 w-4" /> Copy viewer link
+                          </Button>
+                          <Button
+                            variant="outline"
+                            className="tap pressable w-full justify-center"
+                            onClick={() => copy(adminLink, "Admin link copied")}
+                            disabled={!isAdmin}
+                            data-testid="button-share-admin"
+                          >
+                            <Crown className="h-4 w-4" /> Copy admin link
+                          </Button>
+                        </div>
+
+                        <div
+                          className="rounded-xl border bg-card/60 p-2 text-xs text-muted-foreground break-all"
+                          data-testid="text-viewer-link"
+                        >
+                          {viewerLink}
+                        </div>
+                      </div>
+
+                      <div className="mt-4 flex items-center justify-between gap-3">
+                        <Button
+                          variant="destructive"
+                          className="tap pressable"
+                          onClick={startNewMatch}
+                          disabled={!isAdmin}
+                          data-testid="button-new-match"
+                        >
+                          New match
+                        </Button>
+
+                        <div className="flex items-center gap-2">
+                          <Label className="text-sm" htmlFor="toggle-viewer" data-testid="label-viewer-mode">
+                            Viewer mode
+                          </Label>
+                          <Switch
+                            id="toggle-viewer"
+                            checked={role === "viewer"}
+                            onCheckedChange={(checked) => {
+                              const nextMode: Role = checked ? "viewer" : "admin";
+                              const nextSearch =
+                                nextMode === "viewer"
+                                  ? setQueryParam(url.search, "mode", "viewer")
+                                  : setQueryParam(setQueryParam(url.search, "mode", "admin"), "key", state.adminKey);
+                              setLocation(`/match/${encodeURIComponent(state.matchId)}${nextSearch}`);
+                            }}
+                            disabled={!isAdmin}
+                            data-testid="switch-viewer-mode"
+                          />
+                        </div>
+                      </div>
+                    </Card>
+                  </div>
+                </TabsContent>
+              </Tabs>
+            </Card>
+          </div>
+
+          <div className="lg:col-span-5 space-y-3 sm:space-y-6">
+            <Card className="glass p-4 sm:p-6">
+              <p className="text-sm font-semibold" data-testid="text-summary-heading">
+                Live scoreboard
+              </p>
+              <div className="mt-3 grid grid-cols-2 gap-3">
+                <ScoreStat label="Runs" value={`${currentInnings.runs}`} testId="stat-runs" />
+                <ScoreStat label="Wkts" value={`${currentInnings.wickets}`} testId="stat-wkts" />
+                <ScoreStat label="Overs" value={formatOvers(currentInnings.balls)} testId="stat-overs" />
+                <ScoreStat label="Extras" value={`${extrasText}`} testId="stat-extras" />
+              </div>
+
+              <Separator className="my-4" />
+
+              <div className="grid grid-cols-1 gap-3">
+                <Card className="bg-card/60 border p-3">
+                  <p
+                    className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                    data-testid="text-now-batting"
+                  >
+                    Now batting
+                  </p>
+                  <p className="mt-1 text-sm" data-testid="text-now-batting-value">
+                    <span className="font-semibold">{currentInnings.striker}</span> &nbsp;•&nbsp; {currentInnings.nonStriker}
+                  </p>
+                </Card>
+                <Card className="bg-card/60 border p-3">
+                  <p
+                    className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                    data-testid="text-now-bowling"
+                  >
+                    Current bowler
+                  </p>
+                  <p className="mt-1 text-sm" data-testid="text-now-bowler-value">
+                    <span className="font-semibold">{currentInnings.bowler}</span>
+                  </p>
+                </Card>
+              </div>
+
+              <Separator className="my-4" />
+
+              <div>
+                <p className="text-sm font-semibold" data-testid="text-recent-events">
+                  Recent balls
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1" data-testid="list-recent-balls">
+                  {state.innings[state.inningsIndex].lastOverSummary
+                    .slice(-12)
+                    .concat(state.innings[state.inningsIndex].overEvents)
+                    .slice(-12)
+                    .map((ev, idx) => (
+                      <span
+                        key={`${ev.id}_${idx}`}
+                        className={cn(
+                          "inline-flex items-center justify-center rounded-full px-2 py-1 text-xs font-semibold",
+                          pillTone(ev),
+                        )}
+                        data-testid={`pill-recent-${idx}`}
+                      >
+                        {eventLabel(ev)}
+                      </span>
+                    ))}
+                </div>
+              </div>
+            </Card>
+
+            <Card className="glass p-4 sm:p-6">
+              <p className="text-sm font-semibold" data-testid="text-mode-heading">
+                Mode
+              </p>
+              <div className="mt-2 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold" data-testid="text-mode-value">
+                    {isAdmin ? "Admin (Scorer)" : "Viewer (Read-only)"}
+                  </p>
+                  <p className="text-xs text-muted-foreground" data-testid="text-mode-help">
+                    {isAdmin
+                      ? "This device can update the score and manage innings."
+                      : "This device can only view the match."}
+                  </p>
+                </div>
+                <span
+                  className={cn(
+                    "rounded-full px-2.5 py-1 text-xs font-semibold",
+                    isAdmin ? "bg-primary/10 text-primary" : "bg-secondary text-secondary-foreground",
+                  )}
+                  data-testid="status-mode-chip"
+                >
+                  {isAdmin ? "Admin" : "Viewer"}
+                </span>
+              </div>
+
+              <Separator className="my-4" />
+
+              <div className="grid grid-cols-1 gap-2">
+                <Button
+                  variant="secondary"
+                  className="tap pressable justify-start"
+                  onClick={() => copy(viewerLink, "Viewer link copied")}
+                  data-testid="button-copy-viewer-side"
+                >
+                  <Eye className="h-4 w-4" /> Copy viewer link
+                </Button>
+
+                {isAdmin ? (
+                  <Button
+                    variant="outline"
+                    className="tap pressable justify-start"
+                    onClick={() => copy(adminLink, "Admin link copied")}
+                    data-testid="button-copy-admin-side"
+                  >
+                    <Crown className="h-4 w-4" /> Copy admin link
+                  </Button>
+                ) : null}
+              </div>
+            </Card>
+          </div>
+        </div>
+
+        <footer className="mt-8 pb-10 text-xs text-muted-foreground" data-testid="text-footer">
+          Tip: keep the scorer device in Admin mode; share the Viewer link with spectators.
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function BigButton({
+  label,
+  sub,
+  tone,
+  disabled,
+  onClick,
+  testId,
+}: {
+  label: string;
+  sub: string;
+  tone: "primary" | "secondary" | "accent" | "danger";
+  disabled?: boolean;
+  onClick: () => void;
+  testId: string;
+}) {
+  const toneClasses =
+    tone === "primary"
+      ? "bg-primary text-primary-foreground border border-primary/30"
+      : tone === "accent"
+        ? "bg-accent text-accent-foreground border border-accent/30"
+        : tone === "danger"
+          ? "bg-destructive text-destructive-foreground border border-destructive/30"
+          : "bg-secondary text-secondary-foreground border";
+
+  return (
+    <Button
+      className={cn(
+        "tap pressable h-16 sm:h-20 rounded-2xl text-left justify-between px-4",
+        toneClasses,
+      )}
+      disabled={disabled}
+      onClick={onClick}
+      data-testid={testId}
+    >
+      <div className="flex items-end justify-between w-full">
+        <div className="flex flex-col">
+          <span className="text-2xl sm:text-3xl font-display leading-none">{label}</span>
+          <span className="text-xs opacity-90">{sub}</span>
+        </div>
+        <span className="text-xs opacity-80">Tap</span>
+      </div>
+    </Button>
+  );
+}
+
+function SmallStepper({
+  title,
+  disabled,
+  onAdd,
+  testBase,
+  alt,
+  altAction,
+  altLabel,
+}: {
+  title: string;
+  disabled?: boolean;
+  onAdd: (n: number) => void;
+  testBase: string;
+  alt?: boolean;
+  altAction?: (n: number) => void;
+  altLabel?: string;
+}) {
+  const options = [1, 2, 3, 4];
+
+  return (
+    <Card className="bg-card/60 border p-3">
+      <p className="text-sm font-semibold" data-testid={`text-extra-${testBase}`}>
+        {title}
+      </p>
+      <div className="mt-2 grid grid-cols-4 gap-1">
+        {options.map((n) => (
+          <Button
+            key={n}
+            variant="secondary"
+            className="tap pressable h-10 rounded-xl px-0"
+            disabled={disabled}
+            onClick={() => onAdd(n)}
+            data-testid={`button-extra-${testBase}-${n}`}
+          >
+            +{n}
+          </Button>
+        ))}
+      </div>
+      {alt && altAction ? (
+        <div className="mt-2">
+          <Button
+            variant="outline"
+            className="tap pressable h-10 w-full rounded-xl"
+            disabled={disabled}
+            onClick={() => altAction(1)}
+            data-testid={`button-extra-${testBase}-alt`}
+          >
+            {altLabel ?? "Alt"}
+          </Button>
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
+function Field({
+  label,
+  value,
+  disabled,
+  onChange,
+  testId,
+}: {
+  label: string;
+  value: string;
+  disabled?: boolean;
+  onChange: (v: string) => void;
+  testId: string;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label className="text-sm" data-testid={`label-${testId}`}>
+        {label}
+      </Label>
+      <Input
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-11 rounded-xl bg-card/70"
+        data-testid={testId}
+      />
+    </div>
+  );
+}
+
+function ScoreStat({
+  label,
+  value,
+  testId,
+}: {
+  label: string;
+  value: string;
+  testId: string;
+}) {
+  return (
+    <div className="rounded-2xl border bg-card/60 p-3">
+      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground" data-testid={`label-${testId}`}>
+        {label}
+      </p>
+      <p className="mt-1 font-display text-2xl" data-testid={`text-${testId}`}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function OverLimitControl({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: number;
+  disabled?: boolean;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <Card className="bg-card/60 border p-3">
+      <p className="text-sm font-semibold" data-testid="text-overs-limit-heading">
+        Overs limit
+      </p>
+      <p className="text-xs text-muted-foreground" data-testid="text-overs-limit-sub">
+        Typical indoor: 6–12 overs.
+      </p>
+      <div className="mt-3 flex items-center gap-2">
+        <Button
+          variant="secondary"
+          className="tap pressable h-10 w-12 rounded-xl"
+          disabled={disabled}
+          onClick={() => onChange(Math.max(1, value - 1))}
+          data-testid="button-overs-minus"
+        >
+          −
+        </Button>
+        <div className="flex-1 rounded-xl border bg-card/60 px-3 py-2 text-center">
+          <span className="text-sm font-semibold" data-testid="text-overs-value">
+            {value}
+          </span>
+        </div>
+        <Button
+          variant="secondary"
+          className="tap pressable h-10 w-12 rounded-xl"
+          disabled={disabled}
+          onClick={() => onChange(Math.min(50, value + 1))}
+          data-testid="button-overs-plus"
+        >
+          +
+        </Button>
+      </div>
+    </Card>
+  );
+}
