@@ -9,6 +9,7 @@ import {
   RotateCcw,
   Share2,
   Shield,
+  Trophy,
   Undo2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -41,17 +42,29 @@ type BallEvent = {
   isWicket?: boolean;
   note?: string;
 };
+type SkinScore = {
+  skin: number;
+  grossRuns: number;
+  wickets: number;
+  netRuns: number;
+};
 
 type Innings = {
   id: string;
   battingTeamId: string;
   bowlingTeamId: string;
+  awaitingBatsmanSelection: boolean;
 
   runs: number;
   wickets: number;
   balls: number;
+  deliveries: number; // total deliveries (legal + illegal)
 
   dotBalls: number;
+  currentSkin: {
+    grossRuns: number;
+    wickets: number;
+  };
 
   extras: {
     wide: number;
@@ -63,17 +76,28 @@ type Innings = {
   striker: string;
   nonStriker: string;
   bowler: string;
+  allBalls: BallEvent[];
 
+  bowlerBalls: Record<string, number>;
+  lastOverBowler: string | null;
   overEvents: BallEvent[];
   lastOverSummary: BallEvent[];
 
   skinIndex: number;
   ballsInSkin: number;
 
+  completedSkins: SkinScore[];
+
   // 👇 THESE THREE LINES ARE WHAT “Extend Innings” MEANS
   usedBatters: string[];
-  bowlerBalls: Record<string, number>;
-  lastOverBowler: string | null;
+};
+
+type SkinResult = {
+  skin: number;
+  teamId: "a" | "b";
+  grossRuns: number;
+  wickets: number;
+  netRuns: number;
 };
 
 type MatchState = {
@@ -104,6 +128,13 @@ type MatchState = {
 
 const STORAGE_PREFIX = "ic_scoring_match_v1:";
 const MAX_BOWLER_BALLS = 12;
+const TOTAL_SKINS = 4;
+
+const WICKET_PENALTY = 5;
+
+function computeInningsNet(inn: Innings): number {
+  return inn.runs - inn.wickets * WICKET_PENALTY;
+}
 
 function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
@@ -113,10 +144,42 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
-function formatOvers(balls: number) {
-  const o = Math.floor(balls / 6);
-  const b = balls % 6;
+function formatOvers(balls: number, oversLimit = 16) {
+  const maxBalls = oversLimit * 6;
+  const displayBalls = Math.min(balls, maxBalls);
+
+  const o = Math.floor(displayBalls / 6);
+  const b = displayBalls % 6;
   return `${o}.${b}`;
+}
+
+function computeSkinNet(
+  innings: Innings | undefined,
+  skinIndex: number,
+): number | null {
+  if (!innings) return null;
+
+  const SKIN_BALLS = 24;
+  const start = skinIndex * SKIN_BALLS;
+  const end = start + SKIN_BALLS;
+
+  // Build a FULL chronological ball list
+  const allBalls: BallEvent[] = [
+    ...innings.lastOverSummary,
+    ...innings.overEvents,
+  ];
+
+  let net = 0;
+
+  allBalls.slice(start, end).forEach((ev) => {
+    net += ev.runs;
+  });
+
+  return net;
+}
+
+function getEventRuns(ev: any): number {
+  return typeof ev.runs === "number" ? ev.runs : -5;
 }
 
 function totalExtras(extras: Innings["extras"]) {
@@ -160,16 +223,25 @@ function defaultMatch(matchId?: string): MatchState {
     dotBalls: 0,
     wickets: 0,
     balls: 0,
+    deliveries: 0,
     extras: { wide: 0, noball: 0, bye: 0, legbye: 0 },
-    striker: "Batter 1",
-    nonStriker: "Batter 2",
-    bowler: "Bowler 1",
+    striker: "",
+    nonStriker: "",
+    bowler: "",
     overEvents: [],
     lastOverSummary: [],
     skinIndex: 0,
     ballsInSkin: 0,
     lastOverBowler: null,
     usedBatters: [],
+    completedSkins: [],
+    awaitingBatsmanSelection: false,
+
+    allBalls: [],
+    currentSkin: {
+      grossRuns: 0,
+      wickets: 0,
+    },
   };
 
   const state: MatchState = {
@@ -186,7 +258,7 @@ function defaultMatch(matchId?: string): MatchState {
       b: { id: "b", name: "Team B", players: [] },
     },
 
-    oversLimit: 8,
+    oversLimit: 16,
 
     inningsIndex: 0,
     innings: [baseInnings],
@@ -214,19 +286,58 @@ function pushHistory(state: MatchState) {
 }
 
 function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
+  const updatedCurrentSkin = {
+    grossRuns: inn.currentSkin.grossRuns + ev.runs,
+    wickets: inn.currentSkin.wickets + (ev.isWicket ? 1 : 0),
+  };
+
   const next: Innings = {
     ...inn,
     runs: inn.runs + ev.runs,
+    allBalls: [...inn.allBalls, ev],
     wickets: inn.wickets + (ev.isWicket ? 1 : 0),
     balls: inn.balls + (ev.countsBall ? 1 : 0),
+    deliveries: inn.deliveries + 1,
     ballsInSkin: inn.ballsInSkin + (ev.countsBall ? 1 : 0),
+    currentSkin: updatedCurrentSkin, // ✅ ADD THIS
     overEvents: [...inn.overEvents, ev],
     dotBalls: ev.type === "dot" ? inn.dotBalls + 1 : 0,
   };
+
+  // Skin ends after 4 overs (24 balls)
+  // Skin ends after 4 overs (24 balls)
   // Skin ends after 4 overs (24 balls)
   if (next.ballsInSkin === 24) {
+    const completed = next.completedSkins ?? [];
+
+    const skinNet =
+      updatedCurrentSkin.grossRuns - updatedCurrentSkin.wickets * 5;
+
+    next.completedSkins = [
+      ...completed,
+      {
+        skin: next.skinIndex + 1,
+        grossRuns: updatedCurrentSkin.grossRuns,
+        wickets: updatedCurrentSkin.wickets,
+        netRuns: skinNet,
+      },
+    ];
+
     next.skinIndex += 1;
     next.ballsInSkin = 0;
+
+    // ✅ RESET current skin for next skin
+    next.currentSkin = { grossRuns: 0, wickets: 0 };
+    // 🔴 FORCE skin break
+    next.striker = "";
+    next.nonStriker = "";
+
+    // 🔒 lock previous batters
+    next.usedBatters = [
+      ...(next.usedBatters ?? []),
+      inn.striker,
+      inn.nonStriker,
+    ].filter((b): b is string => Boolean(b));
   }
 
   if (ev.type === "wide")
@@ -241,7 +352,9 @@ function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
   if (next.balls % 6 === 0 && next.overEvents.length) {
     next.lastOverSummary = next.overEvents;
     next.overEvents = [];
-    next.lastOverBowler = inn.bowler; // 👈 record who bowled this over
+
+    // ✅ REQUIRED
+    next.lastOverBowler = next.bowler;
   }
 
   // Track bowler balls (only legal balls)
@@ -303,9 +416,13 @@ function buildAdminLink(matchId: string, adminKey: string) {
 }
 
 export default function ScoringApp() {
+  console.log("🚀 ScoringApp rendered");
   const { toast } = useToast();
   const [, params] = useRoute("/match/:matchId");
   const [location, setLocation] = useLocation();
+  const [activeTab, setActiveTab] = useState<"controls" | "players" | "match">(
+    "controls",
+  );
 
   const matchIdFromRoute = params?.matchId;
   const url = useMemo(() => new URL(window.location.href), [location]);
@@ -331,28 +448,155 @@ export default function ScoringApp() {
   const isAdmin = role === "admin";
 
   const currentInnings = state.innings[state.inningsIndex];
-  const teamABatters = state.teams.a.players ?? [];
-  const teamBBatters = state.teams.b.players ?? [];
+  const isEndOfOver =
+    currentInnings.balls > 0 && currentInnings.balls % 6 === 0;
+  const isAtOverBreak =
+    currentInnings.balls > 0 &&
+    currentInnings.balls % 6 === 0 &&
+    currentInnings.overEvents.length === 0;
 
-  const battingPlayers =
-    currentInnings.battingTeamId === "a"
-      ? state.teams.a.players
-      : state.teams.b.players;
+  const needsBowlerSelection =
+    currentInnings.balls > 0 &&
+    currentInnings.balls % 6 === 0 &&
+    !currentInnings.bowler;
 
-  const bowlingPlayers =
-    currentInnings.bowlingTeamId === "a"
-      ? state.teams.a.players
-      : state.teams.b.players;
+  // Track balls bowled per bowler (current innings)
+  const bowlerBalls: Record<string, number> = useMemo(() => {
+    const inn = state.innings[state.inningsIndex];
+    return inn.bowlerBalls ?? {};
+  }, [state.innings, state.inningsIndex]);
 
-  const usedBatters = new Set(
-    state.innings
-      .filter((inn, idx) => idx < state.inningsIndex) // previous innings only
-      .flatMap((inn) => [inn.striker, inn.nonStriker]),
-  );
+  const battingPlayers: string[] = useMemo(() => {
+    if (!currentInnings) return [];
+
+    if (currentInnings.battingTeamId === "a") {
+      return state.teams.a.players ?? [];
+    }
+
+    if (currentInnings.battingTeamId === "b") {
+      return state.teams.b.players ?? [];
+    }
+
+    return [];
+  }, [currentInnings, state.teams.a.players, state.teams.b.players]);
+
+  const bowlingPlayers: string[] = useMemo(() => {
+    if (!currentInnings) return [];
+
+    if (currentInnings.bowlingTeamId === "a") {
+      return state.teams.a.players ?? [];
+    }
+
+    if (currentInnings.bowlingTeamId === "b") {
+      return state.teams.b.players ?? [];
+    }
+
+    return [];
+  }, [currentInnings, state.teams.a.players, state.teams.b.players]);
+
+  const usedBatters = useMemo(() => {
+    return new Set(currentInnings.usedBatters ?? []);
+  }, [currentInnings.usedBatters]);
 
   const bowlerOvers = currentInnings.bowlerBalls ?? {};
 
   const isSkinLocked = currentInnings.ballsInSkin > 0;
+  const isMatchCompleted = state.status === "completed";
+
+  // ✅ Find bowlers who can still legally bowl (less than 2 overs)
+  const availableBowlers = bowlingPlayers.filter((p) => {
+    const balls = bowlerBalls[p] ?? 0;
+    const overs = Math.floor(balls / 6);
+    return overs < 2;
+  });
+
+  // ✅ If more than 1 available, we must enforce "no consecutive overs"
+  const hasAlternativeBowler = availableBowlers.length > 1;
+
+  // 🚦 Over break: over completed but new bowler not selected
+  const isOverBreak =
+    currentInnings.balls > 0 &&
+    currentInnings.balls % 6 === 0 &&
+    !currentInnings.bowler;
+
+  // 🚦 Skin break: 4 overs completed, new batters not selected yet
+  const isSkinBreak =
+    currentInnings.completedSkins.length > 0 &&
+    (!currentInnings.striker || !currentInnings.nonStriker);
+
+  useEffect(() => {
+    if (isSkinBreak) {
+      setActiveTab("controls");
+    }
+  }, [isSkinBreak]);
+
+  // 🔒 Batter selection allowed only at skin start
+  const isBatterSelectionLocked = currentInnings.ballsInSkin > 0;
+
+  // 🔒 Bowler selection locked during middle of over
+  const isBowlerSelectionLocked =
+    currentInnings.balls > 0 && currentInnings.balls % 6 !== 0;
+
+  const matchCompleted =
+    state.status === "completed" ||
+    (state.inningsIndex === 1 &&
+      state.innings[1]?.balls >= state.oversLimit * 6);
+
+  const matchEnded =
+    state.status === "completed" ||
+    (state.inningsIndex === 1 &&
+      currentInnings.completedSkins.length === TOTAL_SKINS);
+  const controlsDisabled = matchEnded || state.status === "completed";
+
+  const isReadyToScore =
+    !!currentInnings.striker &&
+    !!currentInnings.nonStriker &&
+    !!currentInnings.bowler &&
+    !isOverBreak &&
+    !isSkinBreak &&
+    state.status === "live" &&
+    !controlsDisabled;
+
+  const startResumeDisabled =
+    !isAdmin || // only admin can start/resume
+    controlsDisabled || // block after match end
+    !state.setupCompleted || // cannot start before setup
+    (state.status === "live" && !isReadyToScore);
+
+  const nextInningsDisabled =
+    !isAdmin ||
+    controlsDisabled || // prevents next innings after match end
+    !state.setupCompleted ||
+    isOverBreak ||
+    isSkinBreak ||
+    matchCompleted;
+
+  // derived near existing matchEnded/matchCompleted variables
+
+  const teamARuns = state.innings[0]?.runs ?? 0;
+  const teamBRuns = state.innings[1]?.runs ?? 0;
+
+  // -- Replace the old matchResult calculation with this --
+  let matchResult = "";
+
+  if (matchEnded) {
+    if (teamARuns > teamBRuns) {
+      // Option A: normal case-sensitive team name
+      matchResult = `${state.teams.a.name} won`;
+      // Option B: uppercase "TEAM A WON"
+      // matchResult = `${state.teams.a.name.toUpperCase()} WON`;
+    } else if (teamBRuns > teamARuns) {
+      matchResult = `${state.teams.b.name} won`;
+      // Or uppercase:
+      // matchResult = `${state.teams.b.name.toUpperCase()} WON`;
+    } else {
+      matchResult = "Match tied";
+      // Or "Tie" if you prefer shorter:
+      // matchResult = "Match tied";
+    }
+  }
+
+  const isNewOver = currentInnings.balls > 0 && currentInnings.balls % 6 === 0;
 
   const targetText = useMemo(() => {
     if (state.inningsIndex === 1) {
@@ -362,12 +606,22 @@ export default function ScoringApp() {
     return "";
   }, [state.inningsIndex, state.innings]);
 
+  // --- locate the existing matchStatusText useMemo and replace it with this improved mapping ---
   const matchStatusText = useMemo(() => {
-    if (state.status === "setup") return "Ready to start";
+    // Setup not completed yet → “Not started”
+    if (state.status === "setup") {
+      // if setupCompleted is a flag in your state that indicates the match has been configured,
+      // show a slightly different message once setup has been completed.
+      return state.setupCompleted ? "Ready to start" : "Not started";
+    }
     if (state.status === "live") return "Live";
     if (state.status === "innings_break") return "Innings break";
-    return "Completed";
-  }, [state.status]);
+    return "Match completed";
+  }, [state.status, state.setupCompleted]);
+
+  // --- later in JSX, replace the match summary text block with this single line ---
+  // (Find the current location that shows "Match completed" / "Match in progress". Replace it)
+  <p className="text-xs text-muted-foreground mb-3">{matchStatusText}</p>;
 
   useEffect(() => {
     const next: MatchState = { ...state, updatedAt: Date.now() };
@@ -405,7 +659,15 @@ export default function ScoringApp() {
       skinIndex: 0,
       ballsInSkin: 0,
       lastOverBowler: null,
+      awaitingBatsmanSelection: false,
+
       bowlerBalls: {},
+      allBalls: [],
+      currentSkin: {
+        grossRuns: 0,
+        wickets: 0,
+      },
+      completedSkins: [],
     };
 
     safeSet(
@@ -493,9 +755,6 @@ export default function ScoringApp() {
   function setPlayers(striker: string, nonStriker: string, bowler: string) {
     const inn = state.innings[state.inningsIndex];
 
-    // 🔒 Lock players once skin has started
-    if (inn.ballsInSkin > 0) return;
-
     const updated: Innings = { ...inn, striker, nonStriker, bowler };
     const innings = [...state.innings];
     innings[state.inningsIndex] = updated;
@@ -510,34 +769,58 @@ export default function ScoringApp() {
   function toggleTeamsForNextInnings() {
     const prev = state.innings[state.inningsIndex];
 
+    // Safety guard: only allow transition when innings has actually completed
+    const oversLimit = clamp(state.oversLimit ?? 16, 1, 50);
+    const oversCompleted = Math.floor(prev.balls / 6) >= oversLimit;
+    const skinsCompleted = (prev.completedSkins?.length ?? 0) >= TOTAL_SKINS;
+
+    if (!oversCompleted && !skinsCompleted) {
+      toast({
+        title: "Cannot start next innings",
+        description:
+          "Current innings has not yet reached the overs limit or completed all skins.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const nextInnings: Innings = {
       id: uid("inn"),
+
+      // 🔁 SWAP TEAMS
       battingTeamId: prev.bowlingTeamId,
       bowlingTeamId: prev.battingTeamId,
 
       runs: 0,
       wickets: 0,
       balls: 0,
-
       dotBalls: 0,
+      awaitingBatsmanSelection: false,
 
       extras: { wide: 0, noball: 0, bye: 0, legbye: 0 },
 
-      striker: "Batter 1",
-      nonStriker: "Batter 2",
-      bowler: "Bowler 1",
+      striker: "",
+      nonStriker: "",
+      bowler: "",
+      deliveries: 0,
+      usedBatters: [],
 
       overEvents: [],
       lastOverSummary: [],
+      allBalls: [], // ✅ REQUIRED
 
-      // 🔑 REQUIRED for indoor rules
+      // 🔁 RESET SKIN STATE
       skinIndex: 0,
       ballsInSkin: 0,
+      currentSkin: {
+        grossRuns: 0,
+        wickets: 0,
+      },
+      completedSkins: [],
 
-      // 🔑 REQUIRED for bowling rules
+      // 🔁 RESET BOWLING STATE
       bowlerBalls: {},
       lastOverBowler: null,
-      usedBatters: [],
     };
 
     safeSet(
@@ -551,19 +834,91 @@ export default function ScoringApp() {
   }
 
   function endInnings() {
+    const inn = state.innings[state.inningsIndex];
+
+    // Safety guard: only allow ending innings when it has completed the overs or all skins
+    const oversLimit = clamp(state.oversLimit ?? 16, 1, 50);
+    const oversCompleted = Math.floor(inn.balls / 6) >= oversLimit;
+    const skinsCompleted = (inn.completedSkins?.length ?? 0) >= TOTAL_SKINS;
+
+    if (!oversCompleted && !skinsCompleted) {
+      toast({
+        title: "Cannot end innings",
+        description:
+          "Current innings has not reached the overs limit or completed all skins. Finish the final legal delivery (or complete all skins) before ending the innings.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     safeSet(pushHistory({ ...state, status: "innings_break" }));
   }
 
   function addEvent(ev: BallEvent) {
-    // 🔍 Use CURRENT state only for validation
     const currentInn = state.innings[state.inningsIndex];
 
-    // 🚫 1) Enforce bowling rules only on legal balls
+    if (!isReadyToScore) {
+      toast({
+        title: "Select players first",
+        description:
+          "Please select striker, non-striker, and bowler before scoring.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // 🚫 Require bowler selection at start of every new over
+    const isStartOfNewOver = currentInn.balls > 0 && currentInn.balls % 6 === 0;
+
+    if (isStartOfNewOver && !currentInn.bowler) {
+      toast({
+        title: "Select bowler",
+        description: "Please select a bowler to continue the next over.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // 🚫 Prevent same bowler bowling consecutive overs
+    if (
+      isStartOfNewOver &&
+      currentInn.lastOverBowler &&
+      currentInn.bowler === currentInn.lastOverBowler &&
+      hasAlternativeBowler
+    ) {
+      toast({
+        title: "Invalid bowler",
+        description:
+          "Same bowler cannot bowl consecutive overs. Please select a different bowler.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // 🚫 Block scoring if batters not selected
+    if (!currentInn.striker || !currentInn.nonStriker) {
+      toast({
+        title: "Select batters",
+        description: "Please select striker and non-striker to continue.",
+        variant: "destructive",
+      });
+      return;
+    }
+    // 🚫 BLOCK scoring if bowler not selected
+    if (!currentInn.bowler) {
+      toast({
+        title: "Select bowler",
+        description: "Please select a bowler to continue scoring.",
+        variant: "destructive",
+      });
+      return;
+    }
+    // Bowling validation (already working)
+
     if (ev.countsBall) {
       const bowler = currentInn.bowler;
       const ballsBowled = currentInn.bowlerBalls[bowler] ?? 0;
 
-      // ❌ Max 2 overs per bowler
       if (ballsBowled >= 12) {
         toast({
           title: "Bowling limit reached",
@@ -572,63 +927,161 @@ export default function ScoringApp() {
         });
         return;
       }
-
-      // ❌ Prevent consecutive overs
-      const isStartOfNewOver = currentInn.balls % 6 === 0;
-
-      if (
-        isStartOfNewOver &&
-        currentInn.lastOverBowler === bowler &&
-        currentInn.balls > 0
-      ) {
-        toast({
-          title: "Invalid bowler",
-          description: `${bowler} cannot bowl consecutive overs.`,
-          variant: "destructive",
-        });
-        return;
-      }
     }
+    // 🚫 Skin transition check (4 overs = 24 balls)
+    const isSkinComplete =
+      currentInn.ballsInSkin === 0 &&
+      currentInn.skinIndex > 0 &&
+      !currentInn.striker &&
+      !currentInn.nonStriker;
 
-    // 📸 2) Save history snapshot
-    const withHistory = pushHistory(state);
-
-    const inn = state.innings[state.inningsIndex];
-
-    if (ev.countsBall && inn.balls % 6 === 0 && inn.balls > 0 && !inn.bowler) {
+    if (isSkinComplete) {
       toast({
-        title: "Select bowler",
-        description: "Please select a bowler for the next over.",
+        title: "Select batters",
+        description: "Choose striker and non-striker for the new skin.",
         variant: "destructive",
       });
       return;
     }
 
-    // 🧮 3) Apply event to cloned state
+    const withHistory = pushHistory(state);
     const historyInn = withHistory.innings[withHistory.inningsIndex];
+
     const updatedInn = applyBallEvent(historyInn, ev);
 
-    const innings = [...withHistory.innings];
-    innings[withHistory.inningsIndex] = updatedInn;
+    // 🏁 END OF MATCH (2nd innings completed)
+    if (
+      state.inningsIndex === 1 &&
+      updatedInn.completedSkins.length === TOTAL_SKINS
+    ) {
+      const innings = [...withHistory.innings];
+      innings[withHistory.inningsIndex] = updatedInn;
 
-    // ✅ 4) Commit
+      safeSet({
+        ...withHistory,
+        innings,
+        status: "completed",
+      });
+
+      toast({
+        title: "Match completed",
+        description: "All skins completed. Result finalized.",
+      });
+
+      return;
+    }
+
+    // 🏁 End innings AFTER final skin is completed
+
+    if (
+      updatedInn.completedSkins.length === TOTAL_SKINS &&
+      state.inningsIndex === 0
+    ) {
+      toast({
+        title: "Innings completed",
+        description: "All skins completed. Switching teams.",
+      });
+
+      // Apply updatedInn into the history state and atomically create the next innings
+      const innings = [...withHistory.innings];
+      innings[withHistory.inningsIndex] = updatedInn;
+
+      const prev = updatedInn;
+      const nextInnings: Innings = {
+        id: uid("inn"),
+
+        // 🔁 SWAP TEAMS
+        battingTeamId: prev.bowlingTeamId,
+        bowlingTeamId: prev.battingTeamId,
+
+        runs: 0,
+        wickets: 0,
+        balls: 0,
+        dotBalls: 0,
+        awaitingBatsmanSelection: false,
+
+        extras: { wide: 0, noball: 0, bye: 0, legbye: 0 },
+
+        striker: "",
+        nonStriker: "",
+        bowler: "",
+        deliveries: 0,
+        usedBatters: [],
+
+        overEvents: [],
+        lastOverSummary: [],
+        allBalls: [],
+
+        // 🔁 RESET SKIN STATE
+        skinIndex: 0,
+        ballsInSkin: 0,
+        currentSkin: {
+          grossRuns: 0,
+          wickets: 0,
+        },
+        completedSkins: [],
+
+        // 🔁 RESET BOWLING STATE
+        bowlerBalls: {},
+        lastOverBowler: null,
+      };
+
+      safeSet(
+        pushHistory({
+          ...withHistory,
+          innings: [...innings, nextInnings],
+          inningsIndex: withHistory.inningsIndex + 1,
+          status: "live",
+        }),
+      );
+
+      return;
+    }
+
+    // ✅ Detect end of over
+    const isEndOfOver = ev.countsBall && updatedInn.balls % 6 === 0;
+
+    const finalInn: Innings = {
+      ...updatedInn,
+
+      // 🔒 PRESERVE used batters across state rebuilds
+      usedBatters: updatedInn.usedBatters ?? historyInn.usedBatters ?? [],
+
+      lastOverBowler: isEndOfOver
+        ? historyInn.bowler
+        : historyInn.lastOverBowler,
+
+      bowler: isEndOfOver ? "" : updatedInn.bowler,
+    };
+
+    const innings = [...withHistory.innings];
+    innings[withHistory.inningsIndex] = finalInn;
+
     safeSet({ ...withHistory, innings, status: "live" });
   }
 
   function addRun(runs: number) {
+    if (!isReadyToScore) {
+      toast({
+        title: "Select players first",
+        description:
+          "Please select striker, non-striker, and bowler before scoring.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const inn = state.innings[state.inningsIndex];
 
-    // DOT ball
     if (runs === 0) {
       const nextDotCount = inn.dotBalls + 1;
 
-      // AUTO OUT on 3rd dot ball
       if (nextDotCount === 3) {
         addEvent({
           id: uid("ball"),
           ts: Date.now(),
           type: "wicket",
-          runs: -5,
+          runs: 0,
           countsBall: true,
           isWicket: true,
           note: "Auto OUT (3 dot balls)",
@@ -646,7 +1099,6 @@ export default function ScoringApp() {
       return;
     }
 
-    // NORMAL RUN (1–6)
     addEvent({
       id: uid("ball"),
       ts: Date.now(),
@@ -657,11 +1109,21 @@ export default function ScoringApp() {
   }
 
   function addWicket() {
+    if (!isReadyToScore) {
+      toast({
+        title: "Select players first",
+        description:
+          "Please select striker, non-striker, and bowler before scoring.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     addEvent({
       id: uid("ball"),
       ts: Date.now(),
       type: "wicket",
-      runs: -5,
+      runs: 0,
       countsBall: true,
       isWicket: true,
       note: "Wicket -5",
@@ -669,23 +1131,31 @@ export default function ScoringApp() {
   }
 
   function addExtra(type: "wide" | "noball" | "bye" | "legbye", runs: number) {
+    if (!isReadyToScore) {
+      toast({
+        title: "Select players first",
+        description:
+          "Please select striker, non-striker, and bowler before scoring.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const inn = state.innings[state.inningsIndex];
 
-    // Current over number (1-based)
+    // Use total legal balls for current over (inn.balls is incremented only for legal balls)
     const currentOver = Math.floor(inn.balls / 6) + 1;
 
     const isWideOrNoBall = type === "wide" || type === "noball";
 
-    // Indoor rule:
-    // Wide / No Ball = 2 default runs + selected runs
+    // Indoor rule: Wide / No Ball = 2 default runs + selected runs
     const totalRuns = isWideOrNoBall ? runs + 2 : runs;
 
-    // Ball counting rule:
-    // Overs 1–15 → WD/NB counts as ball
-    // Over 16 → WD/NB does NOT count as ball
-    const countsBall = isWideOrNoBall
-      ? currentOver < 16
-      : type === "bye" || type === "legbye";
+    // Use configured overs limit (fallback to 16)
+    const oversLimit = clamp(state.oversLimit ?? 16, 1, 50);
+
+    // Wide/No-ball count as a legal delivery only for overs before the final over
+    const countsBall = isWideOrNoBall ? currentOver < oversLimit : true;
 
     addEvent({
       id: uid("ball"),
@@ -708,8 +1178,10 @@ export default function ScoringApp() {
   const overPills = currentInnings.overEvents;
   const lastOverPills = currentInnings.lastOverSummary;
 
-  const totalScore = `${currentInnings.runs}/${currentInnings.wickets}`;
-  const oversText = `${formatOvers(currentInnings.balls)} ov`;
+  const inningsNet = computeInningsNet(currentInnings);
+  const totalScore = `${inningsNet}/${currentInnings.wickets}`;
+
+  const oversText = `${formatOvers(currentInnings.balls, state.oversLimit)} ov`;
   const extrasText = totalExtras(currentInnings.extras);
 
   const isOverLimitReached =
@@ -755,6 +1227,25 @@ export default function ScoringApp() {
       .split("\n")
       .map((p) => p.trim())
       .filter(Boolean);
+  }
+
+  function computeLiveSkinNet(inn: Innings): number {
+    const SKIN_BALLS = 24;
+
+    const skinStart = inn.skinIndex * SKIN_BALLS;
+    const skinEnd = skinStart + SKIN_BALLS;
+
+    const skinBalls = (inn.allBalls ?? []).slice(skinStart, skinEnd);
+
+    let gross = 0;
+    let wickets = 0;
+
+    skinBalls.forEach((ev) => {
+      gross += ev.runs;
+      if (ev.isWicket) wickets += 1;
+    });
+
+    return gross - wickets * 5;
   }
 
   function setTeamPlayers(teamId: "a" | "b", players: string[]) {
@@ -846,38 +1337,29 @@ export default function ScoringApp() {
                         </div>
                       </div>
                     </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <span
-                        className={cn(
-                          "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold",
-                          state.status === "live"
-                            ? "bg-primary/10 text-primary"
-                            : "bg-secondary text-secondary-foreground",
-                        )}
-                        data-testid="status-match"
-                      >
-                        <Shield className="h-3.5 w-3.5 mr-1" />{" "}
+                    <div className="inline-flex gap-2 items-center">
+                      {/* Skin only shown after setup/when live */}
+                      {(state.setupCompleted || state.status !== "setup") && (
+                        <span className="rounded-md px-2 py-1 text-xs bg-muted/30">
+                          {`Skin ${currentInnings.skinIndex + 1} / ${TOTAL_SKINS}`}
+                        </span>
+                      )}
+
+                      {/* Always show friendly match status */}
+                      <span className="rounded-md px-2 py-1 text-xs bg-muted/30">
                         {matchStatusText}
                       </span>
-                      <span
-                        className="inline-flex items-center rounded-full bg-card/60 border px-2.5 py-1 text-xs font-semibold"
-                        data-testid="status-innings"
-                      >
-                        Innings {state.inningsIndex + 1} • {battingName} batting
-                      </span>
-                      {targetText ? (
-                        <span
-                          className="inline-flex items-center rounded-full bg-accent/10 text-accent px-2.5 py-1 text-xs font-semibold"
-                          data-testid="status-target"
-                        >
-                          {targetText}
+
+                      {/* Innings only shown after setup/when live */}
+                      {(state.setupCompleted || state.status !== "setup") && (
+                        <span className="rounded-md px-2 py-1 text-xs bg-muted/30">
+                          {`Innings ${state.inningsIndex + 1} • ${battingName} batting`}
                         </span>
-                      ) : null}
-                      <span
-                        className="inline-flex items-center rounded-full bg-card/60 border px-2.5 py-1 text-xs font-semibold"
-                        data-testid="status-overs-limit"
-                      >
-                        {state.oversLimit} ov match
+                      )}
+
+                      {/* Show overs limit (this now defaults to 16) */}
+                      <span className="rounded-md px-2 py-1 text-xs bg-muted/30">
+                        {`${state.oversLimit} ov match`}
                       </span>
                     </div>
                   </div>
@@ -907,47 +1389,41 @@ export default function ScoringApp() {
                 </div>
 
                 <Separator />
-
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Batting card */}
                   <Card className="bg-card/60 border p-3">
-                    <p
-                      className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
-                      data-testid="text-batting-label"
-                    >
-                      Batting
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      BATTING
                     </p>
-                    <p
-                      className="mt-1 font-semibold"
-                      data-testid="text-batting-team"
-                    >
-                      {battingName}
+                    <p className="mt-1 font-semibold">
+                      {state.setupCompleted ||
+                      currentInnings.striker ||
+                      currentInnings.nonStriker
+                        ? currentInnings.battingTeamId === "a"
+                          ? state.teams.a.name
+                          : state.teams.b.name
+                        : "—"}
                     </p>
-                    <p
-                      className="text-xs text-muted-foreground"
-                      data-testid="text-batters"
-                    >
-                      {currentInnings.striker} (str) •{" "}
-                      {currentInnings.nonStriker} (ns)
+                    <p className="text-xs text-muted-foreground">
+                      {currentInnings.striker || currentInnings.nonStriker
+                        ? `${currentInnings.striker || ""} • ${currentInnings.nonStriker || ""}`
+                        : ""}
                     </p>
                   </Card>
+                  {/* Bowling card */}
                   <Card className="bg-card/60 border p-3">
-                    <p
-                      className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
-                      data-testid="text-bowling-label"
-                    >
-                      Bowling
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      BOWLING
                     </p>
-                    <p
-                      className="mt-1 font-semibold"
-                      data-testid="text-bowling-team"
-                    >
-                      {bowlingName}
+                    <p className="mt-1 font-semibold">
+                      {state.setupCompleted || currentInnings.bowler
+                        ? currentInnings.bowlingTeamId === "a"
+                          ? state.teams.a.name
+                          : state.teams.b.name
+                        : "—"}
                     </p>
-                    <p
-                      className="text-xs text-muted-foreground"
-                      data-testid="text-bowler"
-                    >
-                      {currentInnings.bowler}
+                    <p className="text-xs text-muted-foreground">
+                      {currentInnings.bowler || ""}
                     </p>
                   </Card>
                   <Card className="bg-card/60 border p-3">
@@ -1024,7 +1500,10 @@ export default function ScoringApp() {
             </Card>
 
             <Card className="glass p-4 sm:p-6">
-              <Tabs defaultValue="controls">
+              <Tabs
+                value={activeTab}
+                onValueChange={(v) => setActiveTab(v as any)}
+              >
                 <div className="flex items-center justify-between gap-3">
                   <TabsList
                     className="bg-card/60 border"
@@ -1045,9 +1524,7 @@ export default function ScoringApp() {
                     <Button
                       variant="secondary"
                       className="tap pressable"
-                      disabled={
-                        !isAdmin || state.history.snapshots.length === 0
-                      }
+                      disabled={isMatchCompleted}
                       onClick={undo}
                       data-testid="button-undo"
                     >
@@ -1056,7 +1533,7 @@ export default function ScoringApp() {
                     <Button
                       variant="outline"
                       className="tap pressable"
-                      disabled={!isAdmin}
+                      disabled={isMatchCompleted}
                       onClick={resetMatch}
                       data-testid="button-reset"
                     >
@@ -1066,12 +1543,34 @@ export default function ScoringApp() {
                 </div>
 
                 <TabsContent value="controls" className="mt-4">
+                  {!matchEnded && isOverBreak && (
+                    <div className="mb-3 rounded-xl border bg-yellow-50 p-3 text-sm text-yellow-900">
+                      Over completed. Please select the next bowler to continue.
+                    </div>
+                  )}
+
+                  {/* 🔵 Skin break banner */}
+                  {!matchEnded && isSkinBreak && (
+                    <div className="mb-3 rounded-xl border bg-blue-50 p-3 text-sm text-blue-900">
+                      Skin completed. Select new striker and non-striker to
+                      continue.
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3">
                     <BigButton
                       label="0"
                       sub="Dot"
                       tone="secondary"
-                      disabled={!isAdmin || !state.setupCompleted}
+                      disabled={
+                        !isAdmin ||
+                        !state.setupCompleted ||
+                        needsBowlerSelection ||
+                        isOverBreak ||
+                        isSkinBreak ||
+                        !isReadyToScore ||
+                        isMatchCompleted
+                      }
                       onClick={() => addRun(0)}
                       testId="button-run-0"
                     />
@@ -1079,7 +1578,15 @@ export default function ScoringApp() {
                       label="1"
                       sub="Run"
                       tone="primary"
-                      disabled={!isAdmin || !state.setupCompleted}
+                      disabled={
+                        !isAdmin ||
+                        !state.setupCompleted ||
+                        needsBowlerSelection ||
+                        isOverBreak ||
+                        isSkinBreak ||
+                        !isReadyToScore ||
+                        isMatchCompleted
+                      }
                       onClick={() => addRun(1)}
                       testId="button-run-1"
                     />
@@ -1087,7 +1594,15 @@ export default function ScoringApp() {
                       label="2"
                       sub="Runs"
                       tone="primary"
-                      disabled={!isAdmin || !state.setupCompleted}
+                      disabled={
+                        !isAdmin ||
+                        !state.setupCompleted ||
+                        needsBowlerSelection ||
+                        isOverBreak ||
+                        isSkinBreak ||
+                        !isReadyToScore ||
+                        isMatchCompleted
+                      }
                       onClick={() => addRun(2)}
                       testId="button-run-2"
                     />
@@ -1095,7 +1610,15 @@ export default function ScoringApp() {
                       label="3"
                       sub="Runs"
                       tone="primary"
-                      disabled={!isAdmin || !state.setupCompleted}
+                      disabled={
+                        !isAdmin ||
+                        !state.setupCompleted ||
+                        needsBowlerSelection ||
+                        isOverBreak ||
+                        isSkinBreak ||
+                        !isReadyToScore ||
+                        isMatchCompleted
+                      }
                       onClick={() => addRun(3)}
                       testId="button-run-3"
                     />
@@ -1103,7 +1626,15 @@ export default function ScoringApp() {
                       label="4"
                       sub="Boundary"
                       tone="accent"
-                      disabled={!isAdmin || !state.setupCompleted}
+                      disabled={
+                        !isAdmin ||
+                        !state.setupCompleted ||
+                        needsBowlerSelection ||
+                        isOverBreak ||
+                        isSkinBreak ||
+                        !isReadyToScore ||
+                        isMatchCompleted
+                      }
                       onClick={() => addRun(4)}
                       testId="button-run-4"
                     />
@@ -1111,7 +1642,15 @@ export default function ScoringApp() {
                       label="5"
                       sub="Runs"
                       tone="primary"
-                      disabled={!isAdmin || !state.setupCompleted}
+                      disabled={
+                        !isAdmin ||
+                        !state.setupCompleted ||
+                        needsBowlerSelection ||
+                        isOverBreak ||
+                        isSkinBreak ||
+                        !isReadyToScore ||
+                        isMatchCompleted
+                      }
                       onClick={() => addRun(5)}
                       testId="button-run-5"
                     />
@@ -1120,7 +1659,15 @@ export default function ScoringApp() {
                       label="6"
                       sub="Max"
                       tone="accent"
-                      disabled={!isAdmin || !state.setupCompleted}
+                      disabled={
+                        !isAdmin ||
+                        !state.setupCompleted ||
+                        needsBowlerSelection ||
+                        isOverBreak ||
+                        isSkinBreak ||
+                        !isReadyToScore ||
+                        isMatchCompleted
+                      }
                       onClick={() => addRun(6)}
                       testId="button-run-6"
                     />
@@ -1131,7 +1678,15 @@ export default function ScoringApp() {
                       label="W"
                       sub="Wicket"
                       tone="danger"
-                      disabled={!isAdmin || !state.setupCompleted}
+                      disabled={
+                        !isAdmin ||
+                        !state.setupCompleted ||
+                        needsBowlerSelection ||
+                        isOverBreak ||
+                        isSkinBreak ||
+                        !isReadyToScore ||
+                        isMatchCompleted
+                      }
                       onClick={addWicket}
                       testId="button-wicket"
                     />
@@ -1142,7 +1697,15 @@ export default function ScoringApp() {
                       <Button
                         variant="secondary"
                         className="tap pressable h-10 w-full rounded-xl mb-2"
-                        disabled={!isAdmin || !state.setupCompleted}
+                        disabled={
+                          !isAdmin ||
+                          !state.setupCompleted ||
+                          needsBowlerSelection ||
+                          isOverBreak ||
+                          isSkinBreak ||
+                          !isReadyToScore ||
+                          isMatchCompleted
+                        }
                         onClick={() => addExtra("wide", 0)}
                       >
                         Wide (+2)
@@ -1154,7 +1717,15 @@ export default function ScoringApp() {
                             key={n}
                             variant="secondary"
                             className="tap pressable h-10 rounded-xl px-0"
-                            disabled={!isAdmin || !state.setupCompleted}
+                            disabled={
+                              !isAdmin ||
+                              !state.setupCompleted ||
+                              needsBowlerSelection ||
+                              isOverBreak ||
+                              isSkinBreak ||
+                              !isReadyToScore ||
+                              isMatchCompleted
+                            }
                             onClick={() => addExtra("wide", n)}
                           >
                             +{n}
@@ -1170,7 +1741,15 @@ export default function ScoringApp() {
                       <Button
                         variant="secondary"
                         className="tap pressable h-10 w-full rounded-xl mb-2"
-                        disabled={!isAdmin || !state.setupCompleted}
+                        disabled={
+                          !isAdmin ||
+                          !state.setupCompleted ||
+                          needsBowlerSelection ||
+                          isOverBreak ||
+                          isSkinBreak ||
+                          !isReadyToScore ||
+                          isMatchCompleted
+                        }
                         onClick={() => addExtra("noball", 0)}
                       >
                         No Ball (+2)
@@ -1182,7 +1761,15 @@ export default function ScoringApp() {
                             key={n}
                             variant="secondary"
                             className="tap pressable h-10 rounded-xl px-0"
-                            disabled={!isAdmin || !state.setupCompleted}
+                            disabled={
+                              !isAdmin ||
+                              !state.setupCompleted ||
+                              needsBowlerSelection ||
+                              isOverBreak ||
+                              isSkinBreak ||
+                              !isReadyToScore ||
+                              isMatchCompleted
+                            }
                             onClick={() => addExtra("noball", n)}
                           >
                             +{n}
@@ -1194,7 +1781,15 @@ export default function ScoringApp() {
                     <SmallStepper
                       title="Bye/LB"
                       onAdd={(n) => addExtra("bye", n)}
-                      disabled={!isAdmin || !state.setupCompleted}
+                      disabled={
+                        !isAdmin ||
+                        !state.setupCompleted ||
+                        needsBowlerSelection ||
+                        isOverBreak ||
+                        isSkinBreak ||
+                        !isReadyToScore ||
+                        isMatchCompleted
+                      }
                       testBase="bye"
                       alt
                       altAction={(n) => addExtra("legbye", n)}
@@ -1207,7 +1802,15 @@ export default function ScoringApp() {
                       <Button
                         variant="secondary"
                         className="tap pressable"
-                        disabled={!isAdmin}
+                        disabled={
+                          !isAdmin ||
+                          !state.setupCompleted ||
+                          needsBowlerSelection ||
+                          isOverBreak ||
+                          isSkinBreak ||
+                          !isReadyToScore ||
+                          isMatchCompleted
+                        }
                         onClick={swapBatters}
                         data-testid="button-swap-batters"
                       >
@@ -1232,22 +1835,25 @@ export default function ScoringApp() {
                     <div className="flex items-center gap-2">
                       {state.status !== "live" ? (
                         <Button
-                          className="tap pressable"
-                          disabled={!isAdmin || !state.setupCompleted}
-                          onClick={startMatch}
-                          data-testid="button-start"
+                          variant="secondary"
+                          className="rounded-md"
+                          onClick={startMatch} // existing handler
+                          disabled={
+                            startResumeDisabled // or any existing conditions you were checking
+                          }
+                          data-testid="btn-start-resume"
                         >
                           Start / Resume
                         </Button>
                       ) : (
                         <Button
                           variant="secondary"
-                          className="tap pressable"
-                          disabled={!isAdmin}
-                          onClick={endInnings}
-                          data-testid="button-end-innings"
+                          className="rounded-md"
+                          onClick={toggleTeamsForNextInnings} // existing handler
+                          disabled={nextInningsDisabled}
+                          data-testid="btn-next-innings"
                         >
-                          End innings
+                          Next innings
                         </Button>
                       )}
 
@@ -1275,13 +1881,18 @@ export default function ScoringApp() {
                 </TabsContent>
 
                 <TabsContent value="players" className="mt-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    {/* Striker */}
                     <div className="space-y-2">
                       <Label>Striker</Label>
                       <select
-                        className="h-11 w-full rounded-xl border bg-card px-3"
-                        disabled={!isAdmin || !state.setupCompleted}
+                        className="h-11 w-full rounded-xl border bg-card/70 px-3"
                         value={currentInnings.striker}
+                        disabled={
+                          !isAdmin ||
+                          !state.setupCompleted ||
+                          isBatterSelectionLocked
+                        }
                         onChange={(e) =>
                           setPlayers(
                             e.target.value,
@@ -1306,12 +1917,17 @@ export default function ScoringApp() {
                       </select>
                     </div>
 
+                    {/* Non-Striker */}
                     <div className="space-y-2">
                       <Label>Non-Striker</Label>
                       <select
-                        className="h-11 w-full rounded-xl border bg-card px-3"
-                        disabled={!isAdmin || !state.setupCompleted}
+                        className="h-11 w-full rounded-xl border bg-card/70 px-3"
                         value={currentInnings.nonStriker}
+                        disabled={
+                          !isAdmin ||
+                          !state.setupCompleted ||
+                          isBatterSelectionLocked
+                        }
                         onChange={(e) =>
                           setPlayers(
                             currentInnings.striker,
@@ -1335,35 +1951,52 @@ export default function ScoringApp() {
                       </select>
                     </div>
 
+                    {/* Bowler */}
                     <div className="space-y-2">
                       <Label>Bowler</Label>
                       <select
-                        className="h-11 w-full rounded-xl border bg-card px-3"
-                        disabled={!isAdmin || !state.setupCompleted}
+                        className="h-11 w-full rounded-xl border bg-card/70 px-3"
                         value={currentInnings.bowler}
-                        onChange={(e) =>
-                          setPlayers(
-                            currentInnings.striker,
-                            currentInnings.nonStriker,
-                            e.target.value,
-                          )
+                        disabled={
+                          !isAdmin ||
+                          !state.setupCompleted ||
+                          isBowlerSelectionLocked
                         }
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          if (!value) return;
+
+                          const inn = state.innings[state.inningsIndex];
+                          const updated: Innings = {
+                            ...inn,
+                            bowler: value,
+                          };
+
+                          const innings = [...state.innings];
+                          innings[state.inningsIndex] = updated;
+                          safeSet({ ...state, innings });
+                        }}
                       >
                         <option value="">Select bowler</option>
                         {bowlingPlayers.map((p) => {
-                          const balls = bowlerOvers[p] ?? 0;
+                          const balls = bowlerBalls[p] ?? 0;
                           const overs = Math.floor(balls / 6);
 
-                          const disabled =
-                            overs >= 2 || p === currentInnings.lastOverBowler;
+                          const isConsecutive =
+                            isAtOverBreak &&
+                            currentInnings.lastOverBowler === p;
+
+                          const isMaxed = overs >= 2;
 
                           return (
-                            <option key={p} value={p} disabled={disabled}>
-                              {p}
-                              {overs >= 2 ? " (2 overs done)" : ""}
-                              {p === currentInnings.lastOverBowler
-                                ? " (last over)"
-                                : ""}
+                            <option
+                              key={p}
+                              value={p}
+                              disabled={isMaxed || isConsecutive}
+                            >
+                              {p} ({overs}/2)
+                              {isMaxed ? " – max" : ""}
+                              {isConsecutive ? " – last over" : ""}
                             </option>
                           );
                         })}
@@ -1549,104 +2182,135 @@ export default function ScoringApp() {
 
           <div className="lg:col-span-5 space-y-3 sm:space-y-6">
             <Card className="glass p-4 sm:p-6">
-              <p
-                className="text-sm font-semibold"
-                data-testid="text-summary-heading"
-              >
-                Live scoreboard
+              <p className="text-sm font-semibold mb-2">Match Summary</p>
+
+              {/* Friendly status line */}
+              <p className="text-xs text-muted-foreground mb-3">
+                {matchStatusText}
               </p>
-              <div className="mt-3 grid grid-cols-2 gap-3">
-                <ScoreStat
-                  label="Runs"
-                  value={`${currentInnings.runs}`}
-                  testId="stat-runs"
-                />
-                <ScoreStat
-                  label="Wkts"
-                  value={`${currentInnings.wickets}`}
-                  testId="stat-wkts"
-                />
-                <ScoreStat
-                  label="Overs"
-                  value={formatOvers(currentInnings.balls)}
-                  testId="stat-overs"
-                />
-                <ScoreStat
-                  label="Extras"
-                  value={`${extrasText}`}
-                  testId="stat-extras"
-                />
-              </div>
 
-              <Separator className="my-4" />
-
-              <div className="grid grid-cols-1 gap-3">
-                <Card className="bg-card/60 border p-3">
-                  <p
-                    className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
-                    data-testid="text-now-batting"
-                  >
-                    Now batting
-                  </p>
-                  <p
-                    className="mt-1 text-sm"
-                    data-testid="text-now-batting-value"
-                  >
-                    <span className="font-semibold">
-                      {currentInnings.striker}
-                    </span>{" "}
-                    &nbsp;•&nbsp; {currentInnings.nonStriker}
-                  </p>
-                </Card>
-                <Card className="bg-card/60 border p-3">
-                  <p
-                    className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
-                    data-testid="text-now-bowling"
-                  >
-                    Current bowler
-                  </p>
-                  <p
-                    className="mt-1 text-sm"
-                    data-testid="text-now-bowler-value"
-                  >
-                    <span className="font-semibold">
-                      {currentInnings.bowler}
-                    </span>
-                  </p>
-                </Card>
-              </div>
-
-              <Separator className="my-4" />
-
-              <div>
-                <p
-                  className="text-sm font-semibold"
-                  data-testid="text-recent-events"
-                >
-                  Recent balls
-                </p>
-                <div
-                  className="mt-2 flex flex-wrap gap-1"
-                  data-testid="list-recent-balls"
-                >
-                  {state.innings[state.inningsIndex].lastOverSummary
-                    .slice(-12)
-                    .concat(state.innings[state.inningsIndex].overEvents)
-                    .slice(-12)
-                    .map((ev, idx) => (
-                      <span
-                        key={`${ev.id}_${idx}`}
-                        className={cn(
-                          "inline-flex items-center justify-center rounded-full px-2 py-1 text-xs font-semibold",
-                          pillTone(ev),
-                        )}
-                        data-testid={`pill-recent-${idx}`}
-                      >
-                        {eventLabel(ev)}
-                      </span>
-                    ))}
+              {/* If match has ended, show the overall match result prominently */}
+              {matchEnded && matchResult ? (
+                <div className="mb-3">
+                  <div className="text-sm font-semibold mb-1">Result</div>
+                  <div className="text-base font-bold text-primary">
+                    {matchResult}
+                  </div>
                 </div>
+              ) : null}
+
+              {/* Per-innings summary lines */}
+              {[0, 1].map((idx) => {
+                const inn = state.innings[idx];
+                if (!inn) return null;
+
+                const team =
+                  inn.battingTeamId === "a"
+                    ? state.teams.a.name
+                    : state.teams.b.name;
+
+                const gross = inn.runs;
+                const outs = inn.wickets;
+
+                const completedNet =
+                  inn.completedSkins?.reduce(
+                    (sum, skin) => sum + skin.netRuns,
+                    0,
+                  ) ?? 0;
+
+                const liveNet =
+                  (inn.currentSkin?.grossRuns ?? 0) -
+                  (inn.currentSkin?.wickets ?? 0) * WICKET_PENALTY;
+
+                const net = completedNet + liveNet;
+                const overs = formatOvers(inn.balls, state.oversLimit);
+
+                const noPlay =
+                  (inn.deliveries ?? 0) === 0 &&
+                  (inn.completedSkins?.length ?? 0) === 0;
+
+                const displayNet = noPlay ? "—" : net;
+
+                return (
+                  <div key={idx} className="text-sm mb-2">
+                    <span className="font-semibold">{team}:</span> Net{" "}
+                    {displayNet} (Gross {gross}, Outs {outs}) • Overs {overs}/
+                    {state.oversLimit}
+                  </div>
+                );
+              })}
+            </Card>
+            <Card className="glass p-4 sm:p-6">
+              <p className="text-sm font-semibold mb-3">Skin-wise Comparison</p>
+
+              <div className="grid grid-cols-4 text-sm font-semibold border-b pb-2">
+                <div>Skin</div>
+                <div className="text-center">{state.teams.a.name}</div>
+                <div className="text-center">{state.teams.b.name}</div>
+                <div className="text-center">Winner</div>
               </div>
+
+              {[0, 1, 2, 3].map((skin) => {
+                function getSkinNet(
+                  inn: Innings | undefined,
+                  skinIndex: number,
+                ): number | null {
+                  if (!inn) return null;
+
+                  // If there are no events at all in this innings and no completed skins,
+                  // treat the skin as not-yet-started → return null (so UI shows —)
+                  if (
+                    (inn.deliveries ?? 0) === 0 &&
+                    (inn.completedSkins?.length ?? 0) === 0
+                  ) {
+                    return null;
+                  }
+
+                  // Completed skin
+                  if (inn.completedSkins?.[skinIndex]) {
+                    return inn.completedSkins[skinIndex].netRuns;
+                  }
+
+                  // Live skin: only show live net if this is the active skin and there have been deliveries
+                  if (inn.skinIndex === skinIndex) {
+                    return computeLiveSkinNet(inn);
+                  }
+
+                  return null;
+                }
+
+                const aNet = getSkinNet(state.innings[0], skin);
+                const bNet = getSkinNet(state.innings[1], skin);
+
+                // Only declare a winner after BOTH teams have completed this skin.
+                const aCompleted = !!state.innings[0]?.completedSkins?.[skin];
+                const bCompleted = !!state.innings[1]?.completedSkins?.[skin];
+
+                let winner = "—";
+
+                if (
+                  aNet !== null &&
+                  bNet !== null &&
+                  aCompleted &&
+                  bCompleted
+                ) {
+                  if (aNet > bNet) winner = state.teams.a.name;
+                  else if (bNet > aNet) winner = state.teams.b.name;
+                  else winner = "Tie";
+                }
+
+                return (
+                  <div
+                    key={skin}
+                    className="grid grid-cols-4 text-sm py-2 border-b"
+                  >
+                    <div>Skin {skin + 1}</div>
+                    <div className="text-center">{aNet ?? "—"}</div>
+                    <div className="text-center">{bNet ?? "—"}</div>
+                    <div className="text-center">{winner}</div>
+                  </div>
+                );
+              })}
             </Card>
 
             <Card className="glass p-4 sm:p-6">
