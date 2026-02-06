@@ -47,6 +47,7 @@ type SkinScore = {
   grossRuns: number;
   wickets: number;
   netRuns: number;
+  batters?: string[]; // <-- finishing pair (striker, non-striker) at skin
 };
 
 type Innings = {
@@ -136,8 +137,11 @@ const TOTAL_SKINS = 4;
 
 const WICKET_PENALTY = 5;
 
-function computeInningsNet(inn: Innings): number {
-  return inn.runs - inn.wickets * WICKET_PENALTY;
+function computeInningsNet(inn?: Innings | null): number {
+  if (!inn) return 0;
+  const wickets = typeof inn.wickets === "number" ? inn.wickets : 0;
+  const runs = typeof inn.runs === "number" ? inn.runs : 0;
+  return runs - wickets * WICKET_PENALTY;
 }
 
 function uid(prefix = "id") {
@@ -321,6 +325,11 @@ function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
     const skinNet =
         updatedCurrentSkin.grossRuns - updatedCurrentSkin.wickets * 5;
 
+    // Capture finishing pair from the previous inn state (inn.striker / inn.nonStriker)
+    const finishingPair = [inn.striker, inn.nonStriker].filter(
+        Boolean,
+    ) as string[];
+
     next.completedSkins = [
       ...completed,
       {
@@ -328,6 +337,7 @@ function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
         grossRuns: updatedCurrentSkin.grossRuns,
         wickets: updatedCurrentSkin.wickets,
         netRuns: skinNet,
+        batters: finishingPair, // <-- store finishing pair here
       },
     ];
 
@@ -357,7 +367,17 @@ function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
   if (ev.type === "legbye")
     next.extras = { ...next.extras, legbye: next.extras.legbye + ev.runs };
 
-  if (next.balls % 6 === 0 && next.overEvents.length) {
+  // Only mark the over as completed when a legal delivery has just
+  // advanced the balls count to a multiple of 6. This avoids treating
+  // wides/noballs (non-counting) that occur at the start of a new over
+  // as the *last* over.
+  const prevBalls = inn.balls;
+  if (
+      ev.countsBall && // this event counted as a legal ball
+      prevBalls % 6 !== 0 && // previous balls were not already at a boundary
+      next.balls % 6 === 0 && // now we've reached a multiple of 6 → over complete
+      next.overEvents.length
+  ) {
     next.lastOverSummary = next.overEvents;
     next.overEvents = [];
 
@@ -421,6 +441,76 @@ function buildViewerLink(matchId: string) {
 
 function buildAdminLink(matchId: string, adminKey: string) {
   return `${window.location.origin}/match/${encodeURIComponent(matchId)}?mode=admin&key=${encodeURIComponent(adminKey)}`;
+}
+
+// Helper: returns true if, after assigning `candidateBowlerId` to the current upcoming over,
+// the remaining overs can be scheduled given max 2 overs per player and no-consecutive rule.
+function canCompleteRemainingOvers(
+    inn: Innings,
+    bowlingPlayers: string[],
+    candidateBowlerId: string,
+    oversLimit: number,
+): boolean {
+  if (!inn) return true;
+
+  const completedOvers = Math.floor((inn.balls ?? 0) / 6);
+  const remainingOversTotal = Math.max(0, oversLimit - completedOvers);
+
+  // If there are no remaining overs or only one (the current), always OK
+  if (remainingOversTotal <= 1) return true;
+
+  // Build capacities: how many overs each player can still bowl (2 - oversAlready)
+  const caps: Record<string, number> = {};
+  for (const p of bowlingPlayers) {
+    const balls = inn.bowlerBalls?.[p] ?? 0;
+    const oversBowled = Math.floor(balls / 6);
+    caps[p] = Math.max(0, 2 - oversBowled);
+  }
+
+  // Ensure candidate present in caps map
+  if (!(candidateBowlerId in caps)) caps[candidateBowlerId] = 0;
+
+  // Assign candidate for the current over => decrement their capacity
+  caps[candidateBowlerId] = Math.max(0, caps[candidateBowlerId] - 1);
+
+  // Determine the bowler of the most recent completed over (lastOverBowler) if available.
+  // This is the bowler who bowled the last finished over before the upcoming one.
+  let prevUsed: string | null = inn.lastOverBowler ?? null;
+
+  // After we assign candidate to the *current* over, the "previous" for the next slot becomes candidate.
+  prevUsed = candidateBowlerId;
+
+  // We need to schedule the remainingOversTotal - 1 further overs (after the current one)
+  let slots = remainingOversTotal - 1;
+
+  // Greedy simulation: at each slot pick any player with cap>0 and != prevUsed.
+  // This is sufficient for feasibility check for small counts (and typical cricket constraints).
+  const capMap: Record<string, number> = { ...caps };
+
+  for (let s = 0; s < slots; s++) {
+    let chosen: string | null = null;
+    let bestCap = 0;
+    for (const p of bowlingPlayers) {
+      const c = capMap[p] ?? 0;
+      if (p === prevUsed) continue; // cannot bowl consecutive overs
+      if (c > bestCap) {
+        bestCap = c;
+        chosen = p;
+      }
+    }
+
+    if (!chosen || bestCap <= 0) {
+      // no eligible player to fill this slot → infeasible
+      return false;
+    }
+
+    // consume one capacity and mark chosen as last used
+    capMap[chosen] = capMap[chosen] - 1;
+    prevUsed = chosen;
+  }
+
+  // All remaining slots filled → feasible
+  return true;
 }
 
 export default function ScoringApp() {
@@ -1585,40 +1675,78 @@ export default function ScoringApp() {
                     value={activeTab}
                     onValueChange={(v) => setActiveTab(v as any)}
                 >
-                  <div className="flex items-center justify-between gap-3">
-                    <TabsList
-                        className="bg-card/60 border"
-                        data-testid="tabs-admin"
-                    >
-                      <TabsTrigger value="controls" data-testid="tab-controls">
-                        Controls
-                      </TabsTrigger>
-                      <TabsTrigger value="players" data-testid="tab-players">
-                        Players
-                      </TabsTrigger>
-                      <TabsTrigger value="match" data-testid="tab-match">
-                        Match
-                      </TabsTrigger>
-                    </TabsList>
+                  {/* Responsive header: Tabs on left, responsive action buttons on right */}
+                  <div className="w-full flex items-center gap-3">
+                    {/* keep TabsList exactly as-is */}
+                    <div className="flex-shrink-0">
+                      <TabsList
+                          className="bg-card/60 border"
+                          data-testid="tabs-admin"
+                      >
+                        <TabsTrigger value="controls" data-testid="tab-controls">
+                          Controls
+                        </TabsTrigger>
+                        <TabsTrigger value="players" data-testid="tab-players">
+                          Players
+                        </TabsTrigger>
+                        <TabsTrigger value="match" data-testid="tab-match">
+                          Match
+                        </TabsTrigger>
+                      </TabsList>
+                    </div>
 
-                    <div className="flex items-center gap-2">
+                    {/* spacer pushes actions to the right */}
+                    <div className="flex-1" />
+
+                    {/* actions: responsive / wrap / mobile icon-only */}
+                    <div
+                        className="flex items-center gap-2 flex-wrap"
+                        style={{ paddingRight: "env(safe-area-inset-right, 12px)" }}
+                    >
+                      {/* Undo: desktop (text + icon) */}
                       <Button
                           variant="secondary"
-                          className="tap pressable"
+                          className="hidden sm:inline-flex tap pressable items-center gap-2"
                           disabled={isMatchCompleted}
                           onClick={undo}
                           data-testid="button-undo"
                       >
                         <Undo2 className="h-4 w-4" /> Undo
                       </Button>
+
+                      {/* Undo: mobile (icon only) */}
+                      <Button
+                          variant="secondary"
+                          className="inline-flex sm:hidden tap pressable items-center"
+                          disabled={isMatchCompleted}
+                          onClick={undo}
+                          aria-label="Undo"
+                          data-testid="button-undo-mobile"
+                      >
+                        <Undo2 className="h-5 w-5" />
+                      </Button>
+
+                      {/* Reset: desktop (text + icon) */}
                       <Button
                           variant="outline"
-                          className="tap pressable"
+                          className="hidden sm:inline-flex tap pressable items-center gap-2"
                           disabled={isMatchCompleted}
                           onClick={() => setShowResetConfirm(true)}
                           data-testid="button-reset"
                       >
                         <RotateCcw className="h-4 w-4" /> Reset
+                      </Button>
+
+                      {/* Reset: mobile (icon only) */}
+                      <Button
+                          variant="outline"
+                          className="inline-flex sm:hidden tap pressable items-center"
+                          disabled={isMatchCompleted}
+                          onClick={() => setShowResetConfirm(true)}
+                          aria-label="Reset"
+                          data-testid="button-reset-mobile"
+                      >
+                        <RotateCcw className="h-5 w-5" />
                       </Button>
                     </div>
                   </div>
@@ -2053,6 +2181,62 @@ export default function ScoringApp() {
                               if (!value) return;
 
                               const inn = state.innings[state.inningsIndex];
+
+                              // Safety: compute bowling players list for this innings
+                              const bowlingPlayersList: string[] = bowlingPlayers;
+
+                              // check immediate consecutive rule first (existing logic)
+                              const isConsecutive =
+                                  isAtOverBreak && inn.lastOverBowler === value;
+
+                              // check max overs (existing)
+                              const balls = inn.bowlerBalls?.[value] ?? 0;
+                              const overs = Math.floor(balls / 6);
+                              const isMaxed = overs >= 2;
+
+                              // New: feasibility check — prevent choices that make finishing impossible
+                              const oversLimitVal = clamp(
+                                  state.oversLimit ?? 16,
+                                  1,
+                                  50,
+                              );
+                              const infeasible = !canCompleteRemainingOvers(
+                                  inn,
+                                  bowlingPlayersList,
+                                  value,
+                                  oversLimitVal,
+                              );
+
+                              if (isConsecutive) {
+                                toast({
+                                  title: "Invalid bowler",
+                                  description:
+                                      "Same bowler cannot bowl consecutive overs. Please select a different bowler.",
+                                  variant: "destructive",
+                                });
+                                return;
+                              }
+
+                              if (isMaxed) {
+                                toast({
+                                  title: "Bowling limit reached",
+                                  description: `${value} has already bowled 2 overs.`,
+                                  variant: "destructive",
+                                });
+                                return;
+                              }
+
+                              if (infeasible) {
+                                toast({
+                                  title: "Cannot pick bowler",
+                                  description:
+                                      "Picking this bowler now would make it impossible to complete the remaining overs. Please select a different bowler.",
+                                  variant: "destructive",
+                                });
+                                return;
+                              }
+
+                              // proceed with existing setting behaviour
                               const updated: Innings = {
                                 ...inn,
                                 bowler: value,
@@ -2071,18 +2255,45 @@ export default function ScoringApp() {
                             const isConsecutive =
                                 isAtOverBreak &&
                                 currentInnings.lastOverBowler === p;
-
                             const isMaxed = overs >= 2;
+
+                            // New: compute infeasible (disabled because picking them now leaves no valid sequence)
+                            const oversLimitVal = clamp(
+                                state.oversLimit ?? 16,
+                                1,
+                                50,
+                            );
+                            const infeasible = !canCompleteRemainingOvers(
+                                currentInnings,
+                                bowlingPlayers,
+                                p,
+                                oversLimitVal,
+                            );
+
+                            const disabledReason = isMaxed
+                                ? " – max"
+                                : isConsecutive
+                                    ? " – last over"
+                                    : infeasible
+                                        ? " – not allowed (would block finish)"
+                                        : "";
 
                             return (
                                 <option
                                     key={p}
                                     value={p}
-                                    disabled={isMaxed || isConsecutive}
+                                    disabled={isMaxed || isConsecutive || infeasible}
+                                    title={
+                                      isMaxed
+                                          ? `${p} – reached 2 overs`
+                                          : isConsecutive
+                                              ? `${p} – bowled last over`
+                                              : infeasible
+                                                  ? "Picking this bowler would prevent completing the remaining overs"
+                                                  : ""
+                                    }
                                 >
-                                  {p} ({overs}/2)
-                                  {isMaxed ? " – max" : ""}
-                                  {isConsecutive ? " – last over" : ""}
+                                  {p} ({overs}/2){disabledReason}
                                 </option>
                             );
                           })}
@@ -2373,71 +2584,149 @@ export default function ScoringApp() {
 
             <div className="lg:col-span-5 space-y-3 sm:space-y-6">
               <Card className="glass p-4 sm:p-6">
-                <p className="text-sm font-semibold mb-2">Match Summary</p>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold mb-2">Match Summary</p>
 
-                {/* Friendly status line */}
-                <p className="text-xs text-muted-foreground mb-3">
-                  {matchStatusText}
-                </p>
-
-                {/* Toss line (inside Match Summary card) */}
-                {state.tossWinner && state.tossChoice ? (
+                    {/* Toss */}
                     <div className="text-sm mb-2">
-                      <span className="font-semibold">Toss:</span>{" "}
-                      {`${state.teams[state.tossWinner].name} won and chose to ${state.tossChoice}`}
-                    </div>
-                ) : null}
-
-                {/* If match has ended, show the overall match result prominently */}
-                {matchEnded && matchResult ? (
-                    <div className="mb-3">
-                      <div className="text-sm font-semibold mb-1">Result</div>
-                      <div className="text-base font-bold text-primary">
-                        {matchResult}
+                      <div className="text-xs text-muted-foreground">Toss</div>
+                      <div className="font-medium">
+                        {state.tossWinner
+                            ? `Toss: ${state.teams[state.tossWinner].name} won${state.tossChoice ? ` and chose to ${state.tossChoice}` : ""}`
+                            : "Toss: —"}
                       </div>
                     </div>
-                ) : null}
 
-                {/* Per-innings summary lines */}
-                {[0, 1].map((idx) => {
-                  const inn = state.innings[idx];
-                  if (!inn) return null;
+                    {/* Score */}
+                    <div className="text-sm">
+                      <div className="text-xs text-muted-foreground">Score</div>
 
-                  const team =
-                      inn.battingTeamId === "a"
-                          ? state.teams.a.name
-                          : state.teams.b.name;
-
-                  const gross = inn.runs;
-                  const outs = inn.wickets;
-
-                  const completedNet =
-                      inn.completedSkins?.reduce(
-                          (sum, skin) => sum + skin.netRuns,
-                          0,
-                      ) ?? 0;
-
-                  const liveNet =
-                      (inn.currentSkin?.grossRuns ?? 0) -
-                      (inn.currentSkin?.wickets ?? 0) * WICKET_PENALTY;
-
-                  const net = completedNet + liveNet;
-                  const overs = formatOvers(inn.balls, state.oversLimit);
-
-                  const noPlay =
-                      (inn.deliveries ?? 0) === 0 &&
-                      (inn.completedSkins?.length ?? 0) === 0;
-
-                  const displayNet = noPlay ? "—" : net;
-
-                  return (
-                      <div key={idx} className="text-sm mb-2">
-                        <span className="font-semibold">{team}:</span> Net{" "}
-                        {displayNet} (Gross {gross}, Outs {outs}) • Overs {overs}/
-                        {state.oversLimit}
+                      <div className="font-medium">
+                        {`${state.teams.a.name}: Net ${computeInningsNet(state.innings[0])} (Gross ${state.innings[0]?.runs ?? 0}, Outs ${state.innings[0]?.wickets ?? 0}) • Overs ${formatOvers(state.innings[0]?.balls ?? 0, state.oversLimit)}`}
                       </div>
-                  );
-                })}
+
+                      <div className="font-medium mt-1">
+                        {`${state.teams.b.name}: Net ${computeInningsNet(state.innings[1])} (Gross ${state.innings[1]?.runs ?? 0}, Outs ${state.innings[1]?.wickets ?? 0}) • Overs ${formatOvers(state.innings[1]?.balls ?? 0, state.oversLimit)}`}
+                      </div>
+
+                      {/* Result / winner line (ONLY shown when match is completed) */}
+                      <div className="mt-3">
+                        {(() => {
+                          const aTotal = computeInningsNet(state.innings[0]);
+                          const bTotal = computeInningsNet(state.innings[1]);
+
+                          if (state.status === "completed") {
+                            if (aTotal > bTotal) {
+                              return (
+                                  <div className="inline-block bg-sky-100 text-sky-700 px-3 py-1 rounded-lg font-semibold text-lg">
+                                    Result: {state.teams.a.name} won
+                                  </div>
+                              );
+                            } else if (bTotal > aTotal) {
+                              return (
+                                  <div className="inline-block bg-sky-100 text-sky-700 px-3 py-1 rounded-lg font-semibold text-lg">
+                                    Result: {state.teams.b.name} won
+                                  </div>
+                              );
+                            } else {
+                              return (
+                                  <div className="text-lg font-semibold text-sky-600">
+                                    Result: Match tied
+                                  </div>
+                              );
+                            }
+                          }
+
+                          // Match is not completed — show nothing (no "Leading" line)
+                          return null;
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* WhatsApp icon-only button (click to open WhatsApp with the match summary text).
+        NOTE: Match ID is not included in the shared text. */}
+                  <div className="flex items-start">
+                    <button
+                        className="inline-flex items-center justify-center rounded-full p-2 hover:bg-muted/40"
+                        aria-label="Share match summary on WhatsApp"
+                        onClick={() => {
+                          try {
+                            const aTotal = computeInningsNet(state.innings[0]);
+                            const bTotal = computeInningsNet(state.innings[1]);
+
+                            const lines: string[] = [];
+                            lines.push(
+                                `${state.title}${state.venue ? ` — ${state.venue}` : ""}`,
+                            );
+                            lines.push(""); // separator
+
+                            // Toss
+                            lines.push(
+                                state.tossWinner
+                                    ? `Toss: ${state.teams[state.tossWinner].name} won${state.tossChoice ? ` and chose to ${state.tossChoice}` : ""}`
+                                    : `Toss: —`,
+                            );
+
+                            lines.push(""); // separator
+
+                            // Score lines
+                            lines.push(
+                                `${state.teams.a.name}: Net ${aTotal} (Gross ${state.innings[0]?.runs ?? 0}, Outs ${state.innings[0]?.wickets ?? 0}) • Overs ${formatOvers(state.innings[0]?.balls ?? 0, state.oversLimit)}`,
+                            );
+                            lines.push(
+                                `${state.teams.b.name}: Net ${bTotal} (Gross ${state.innings[1]?.runs ?? 0}, Outs ${state.innings[1]?.wickets ?? 0}) • Overs ${formatOvers(state.innings[1]?.balls ?? 0, state.oversLimit)}`,
+                            );
+
+                            // Result / winner text (only include explicit Result when match is completed)
+                            if (state.status === "completed") {
+                              if (aTotal > bTotal)
+                                lines.push("", `Result: ${state.teams.a.name} won`);
+                              else if (bTotal > aTotal)
+                                lines.push("", `Result: ${state.teams.b.name} won`);
+                              else lines.push("", "Result: Match tied");
+                            }
+
+                            const text = lines.join("\n");
+                            const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+                            window.open(url, "_blank");
+                          } catch (err) {
+                            // best-effort fallback: copy text to clipboard and notify
+                            try {
+                              const fallback = `Match summary for ${state.title} — open the app to view details.`;
+                              navigator.clipboard?.writeText(fallback);
+                              alert(
+                                  "Could not open WhatsApp directly. A fallback summary was copied to clipboard.",
+                              );
+                            } catch {
+                              alert(
+                                  "Could not open WhatsApp. Please copy the summary manually.",
+                              );
+                            }
+                          }
+                        }}
+                    >
+                      {/* WhatsApp SVG icon only */}
+                      <svg
+                          width="20"
+                          height="20"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          aria-hidden
+                      >
+                        <path
+                            fill="#25D366"
+                            d="M20.52 3.478A11.907 11.907 0 0012 .999C6.48.999 1.96 5.52 1.96 11.04c0 1.94.5 3.84 1.45 5.5L1 23l6.65-1.74A11.98 11.98 0 0012 23c5.52 0 10.04-4.52 10.04-10.04 0-2.69-1.05-5.22-2.52-6.98z"
+                        />
+                        <path
+                            fill="#fff"
+                            d="M17.3 14.8c-.3-.15-1.7-.85-1.95-.95-.25-.1-.44-.15-.63.15-.2.3-.7.95-.85 1.15-.15.2-.3.25-.55.1-.25-.15-1.05-.39-2-1.24-.74-.66-1.23-1.48-1.37-1.73-.15-.25-.02-.39.11-.52.11-.11.25-.29.38-.44.13-.15.17-.25.26-.42.08-.17.04-.32-.02-.47-.06-.15-.63-1.52-.87-2.08-.23-.55-.47-.47-.66-.48-.17-.01-.37-.01-.57-.01-.2 0-.52.07-.79.32-.27.25-1.04 1.02-1.04 2.47 0 1.44 1.06 2.83 1.21 3.02.15.19 2.08 3.3 5.05 4.62 2.97 1.32 2.97.88 3.5.82.53-.06 1.72-.7 1.97-1.38.25-.68.25-1.26.18-1.38-.07-.12-.25-.19-.55-.34z"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
               </Card>
               <Card className="glass p-4 sm:p-6">
                 <p className="text-sm font-semibold mb-3">Skin-wise Comparison</p>
@@ -2498,14 +2787,71 @@ export default function ScoringApp() {
                     else winner = "Tie";
                   }
 
+                  // helper to read finishing pair (if any) for an innings' completed skin
+                  const finishingPairFor = (innIdx: 0 | 1) => {
+                    const innings = state.innings[innIdx];
+                    const entry = innings?.completedSkins?.[skin];
+                    return entry?.batters && entry.batters.length
+                        ? entry.batters
+                        : null;
+                  };
+
+                  const aPair = finishingPairFor(0);
+                  const bPair = finishingPairFor(1);
+
                   return (
                       <div
                           key={skin}
                           className="grid grid-cols-4 text-sm py-2 border-b"
                       >
                         <div>Skin {skin + 1}</div>
-                        <div className="text-center">{aNet ?? "—"}</div>
-                        <div className="text-center">{bNet ?? "—"}</div>
+
+                        {/* Team A: net + finishing pair (if completed) */}
+                        <div className="text-center">
+                          {aNet ?? "—"}
+                          {aCompleted && aPair ? (
+                              <div
+                                  className="text-xs text-muted-foreground mt-1"
+                                  title={aPair.join(", ")}
+                              >
+                          <span
+                              style={{
+                                whiteSpace: "nowrap",
+                                display: "inline-block",
+                                maxWidth: "160px",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}
+                          >
+                            {aPair.join(" · ")}
+                          </span>
+                              </div>
+                          ) : null}
+                        </div>
+
+                        {/* Team B: net + finishing pair (if completed) */}
+                        <div className="text-center">
+                          {bNet ?? "—"}
+                          {bCompleted && bPair ? (
+                              <div
+                                  className="text-xs text-muted-foreground mt-1"
+                                  title={bPair.join(", ")}
+                              >
+                          <span
+                              style={{
+                                whiteSpace: "nowrap",
+                                display: "inline-block",
+                                maxWidth: "160px",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}
+                          >
+                            {bPair.join(" · ")}
+                          </span>
+                              </div>
+                          ) : null}
+                        </div>
+
                         <div className="text-center">{winner}</div>
                       </div>
                   );
