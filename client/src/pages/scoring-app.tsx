@@ -1290,14 +1290,54 @@ export default function ScoringApp() {
       return;
     }
 
+    const currentInn = state.innings[state.inningsIndex];
+    const lastBall =
+      currentInn.allBalls.length > 0
+        ? currentInn.allBalls[currentInn.allBalls.length - 1]
+        : null;
+
+    // Check if the last event was a wide or noball extra
+    const isLastEventExtra =
+      lastBall && (lastBall.type === "wide" || lastBall.type === "noball");
+
+    // Prevent double wicket on same extra: check if there's already a wicket in overEvents after the extra
+    if (isLastEventExtra) {
+      // Check if the most recent event after the extra (if any) is already a wicket
+      // Since allBalls and overEvents are synchronized, we can check the last few events
+      const recentEvents = currentInn.overEvents.slice(-5); // Check last 5 events for efficiency
+      let foundExtra = false;
+      for (let i = 0; i < recentEvents.length; i++) {
+        if (recentEvents[i].id === lastBall!.id) {
+          foundExtra = true;
+          // Check if any subsequent event is a wicket
+          for (let j = i + 1; j < recentEvents.length; j++) {
+            if (recentEvents[j].isWicket) {
+              toast({
+                title: "Wicket already recorded",
+                description:
+                  "A wicket has already been recorded for this delivery.",
+                variant: "destructive",
+              });
+              return;
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    // If wicket is on extra, match the extra's countsBall and use special note
+    const countsBall = isLastEventExtra ? lastBall!.countsBall : true;
+    const note = isLastEventExtra ? "Wicket on extra -5" : "Wicket -5";
+
     addEvent({
       id: uid("ball"),
       ts: Date.now(),
       type: "wicket",
       runs: 0,
-      countsBall: true,
+      countsBall,
       isWicket: true,
-      note: "Wicket -5",
+      note,
     });
   }
 
