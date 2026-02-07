@@ -608,6 +608,18 @@ export default function ScoringApp() {
   const isAdmin = role === "admin";
 
   const currentInnings = state.innings[state.inningsIndex];
+
+  function isWicketRecordedAfterLastExtra(type: "wide" | "noball") {
+    const all = currentInnings.allBalls ?? [];
+    // find the last index of an extra of the given type
+    for (let i = all.length - 1; i >= 0; i--) {
+      if (all[i].type === type) {
+        // return true only if the immediate next event exists and is a wicket
+        return Boolean(all[i + 1]?.isWicket);
+      }
+    }
+    return false;
+  }
   const isEndOfOver =
     currentInnings.balls > 0 && currentInnings.balls % 6 === 0;
   const isAtOverBreak =
@@ -1290,6 +1302,43 @@ export default function ScoringApp() {
       return;
     }
 
+    const inn = state.innings[state.inningsIndex];
+    const last = inn.allBalls[inn.allBalls.length - 1];
+
+    // Prevent double-wicket: if the immediate last event is already a wicket,
+    // do not add another wicket for the same delivery.
+    if (last?.isWicket || last?.type === "wicket") {
+      toast({
+        title: "Wicket already recorded",
+        description:
+          "A wicket has already been recorded for the last delivery.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // If the immediately previous event was an extra (wide, noball, bye, legbye),
+    // inherit the countsBall flag so we don't convert a non-counting extra into a legal ball.
+    if (
+      last &&
+      (last.type === "wide" ||
+        last.type === "noball" ||
+        last.type === "bye" ||
+        last.type === "legbye")
+    ) {
+      addEvent({
+        id: uid("ball"),
+        ts: Date.now(),
+        type: "wicket",
+        runs: 0, // wicket itself contributes no runs; extras already account for runs
+        countsBall: last.countsBall, // match the extra's countsBall behavior
+        isWicket: true,
+        note: "Wicket on extra -5",
+      });
+      return;
+    }
+
+    // Normal wicket (not on an extra)
     addEvent({
       id: uid("ball"),
       ts: Date.now(),
@@ -1899,13 +1948,14 @@ export default function ScoringApp() {
                       onClick={addWicket}
                       testId="button-wicket"
                     />
+                    {/* 2) Replace your Wide Card with this */}
                     <Card className="bg-card/60 border p-3">
                       <p className="text-sm font-semibold">Wide</p>
 
                       {/* Default Wide (+2 runs) */}
                       <Button
                         variant="secondary"
-                        className="tap pressable h-10 w-full rounded-xl mb-2"
+                        className="tap pressable h-10 w-full rounded-xl mb-2 inline-flex items-center justify-between"
                         disabled={
                           !isAdmin ||
                           !state.setupCompleted ||
@@ -1917,7 +1967,14 @@ export default function ScoringApp() {
                         }
                         onClick={() => addExtra("wide", 0)}
                       >
-                        Wide (+2)
+                        <span>Wide (+2)</span>
+
+                        {/* conditional W badge when wicket recorded after last wide */}
+                        {isWicketRecordedAfterLastExtra("wide") ? (
+                          <span className="ml-2 inline-flex items-center justify-center w-5 h-5 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold">
+                            W
+                          </span>
+                        ) : null}
                       </Button>
 
                       <div className="grid grid-cols-4 gap-1">
@@ -1943,13 +2000,14 @@ export default function ScoringApp() {
                       </div>
                     </Card>
 
+                    {/* 3) Replace your No Ball Card with this */}
                     <Card className="bg-card/60 border p-3">
                       <p className="text-sm font-semibold">No Ball</p>
 
                       {/* Default No Ball (+2 runs) */}
                       <Button
                         variant="secondary"
-                        className="tap pressable h-10 w-full rounded-xl mb-2"
+                        className="tap pressable h-10 w-full rounded-xl mb-2 inline-flex items-center justify-between"
                         disabled={
                           !isAdmin ||
                           !state.setupCompleted ||
@@ -1961,7 +2019,14 @@ export default function ScoringApp() {
                         }
                         onClick={() => addExtra("noball", 0)}
                       >
-                        No Ball (+2)
+                        <span>No Ball (+2)</span>
+
+                        {/* conditional W badge when wicket recorded after last noball */}
+                        {isWicketRecordedAfterLastExtra("noball") ? (
+                          <span className="ml-2 inline-flex items-center justify-center w-5 h-5 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold">
+                            W
+                          </span>
+                        ) : null}
                       </Button>
 
                       <div className="grid grid-cols-4 gap-1">
@@ -1986,25 +2051,49 @@ export default function ScoringApp() {
                         ))}
                       </div>
                     </Card>
+<div className="mt-2 flex items-center gap-2">
+  <div className="flex-1">
+    <SmallStepper
+      title="Bye/LB"
+      onAdd={(n) => addExtra("bye", n)}
+      disabled={
+        !isAdmin ||
+        !state.setupCompleted ||
+        needsBowlerSelection ||
+        isOverBreak ||
+        isSkinBreak ||
+        !isReadyToScore ||
+        isMatchCompleted
+      }
+      testBase="bye"
+      alt
+      altAction={(n) => addExtra("legbye", n)}
+      altLabel="Leg bye"
+    />
+  </div>
 
-                    <SmallStepper
-                      title="Bye/LB"
-                      onAdd={(n) => addExtra("bye", n)}
-                      disabled={
-                        !isAdmin ||
-                        !state.setupCompleted ||
-                        needsBowlerSelection ||
-                        isOverBreak ||
-                        isSkinBreak ||
-                        !isReadyToScore ||
-                        isMatchCompleted
-                      }
-                      testBase="bye"
-                      alt
-                      altAction={(n) => addExtra("legbye", n)}
-                      altLabel="Leg bye"
-                    />
-                  </div>
+  {/* Wicket button next to the Bye/LB control */}
+  <div className="shrink-0">
+    <Button
+      variant="destructive"
+      className="tap pressable h-10 px-3 rounded-xl"
+      aria-label="Record wicket"
+      title="Record wicket (-5)"
+      disabled={
+        !isAdmin ||
+        !state.setupCompleted ||
+        needsBowlerSelection ||
+        isOverBreak ||
+        isSkinBreak ||
+        !isReadyToScore ||
+        isMatchCompleted
+      }
+      onClick={() => addWicket()}
+    >
+      W
+    </Button>
+  </div>
+</div>
 
                   <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
