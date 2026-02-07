@@ -1302,9 +1302,15 @@ export default function ScoringApp() {
 
     // Prevent double wicket on same extra: check if there's already a wicket in overEvents after the extra
     if (isLastEventExtra) {
-      const lastExtraIndex = currentInn.overEvents.findIndex(
-        (ev) => ev.id === lastBall!.id,
-      );
+      // Search from the end since the extra should be recent
+      let lastExtraIndex = -1;
+      for (let i = currentInn.overEvents.length - 1; i >= 0; i--) {
+        if (currentInn.overEvents[i].id === lastBall!.id) {
+          lastExtraIndex = i;
+          break;
+        }
+      }
+
       const hasWicketAfterExtra =
         lastExtraIndex >= 0 &&
         currentInn.overEvents
@@ -1322,7 +1328,7 @@ export default function ScoringApp() {
     }
 
     // If wicket is on extra, match the extra's countsBall and use special note
-    const countsBall = isLastEventExtra && lastBall ? lastBall.countsBall : true;
+    const countsBall = isLastEventExtra ? lastBall!.countsBall : true;
     const note = isLastEventExtra ? "Wicket on extra -5" : "Wicket -5";
 
     addEvent({
