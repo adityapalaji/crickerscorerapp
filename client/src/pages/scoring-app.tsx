@@ -1290,14 +1290,46 @@ export default function ScoringApp() {
       return;
     }
 
+    const currentInn = state.innings[state.inningsIndex];
+    const lastBall = currentInn.allBalls[currentInn.allBalls.length - 1];
+
+    // Check if the last event was a wide or noball extra
+    const isLastEventExtra =
+      lastBall && (lastBall.type === "wide" || lastBall.type === "noball");
+
+    // Prevent double wicket on same extra: check if there's already a wicket in overEvents after the extra
+    if (isLastEventExtra) {
+      const lastExtraIndex = currentInn.overEvents.findIndex(
+        (ev) => ev.id === lastBall.id,
+      );
+      const hasWicketAfterExtra =
+        lastExtraIndex >= 0 &&
+        currentInn.overEvents
+          .slice(lastExtraIndex + 1)
+          .some((ev) => ev.isWicket);
+
+      if (hasWicketAfterExtra) {
+        toast({
+          title: "Wicket already recorded",
+          description: "A wicket has already been recorded for this delivery.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    // If wicket is on extra, match the extra's countsBall and use special note
+    const countsBall = isLastEventExtra ? lastBall.countsBall : true;
+    const note = isLastEventExtra ? "Wicket on extra -5" : "Wicket -5";
+
     addEvent({
       id: uid("ball"),
       ts: Date.now(),
       type: "wicket",
       runs: 0,
-      countsBall: true,
+      countsBall,
       isWicket: true,
-      note: "Wicket -5",
+      note,
     });
   }
 
