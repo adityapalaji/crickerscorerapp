@@ -18,7 +18,8 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 
-  /* semantic tokens used by the rest of the file */
+  /* semantic tokens used by the rest of the file (raw HSL components where appropriate) */
+  /* these are numeric HSL components (no hsl(...) wrapper) so Tailwind can build hsl(var(--...) / <alpha>) */
   --background: 220 35% 98%;
   --foreground: 222 35% 12%;
 
@@ -57,29 +58,29 @@
   --primary-border: 199 86% 42%;
   --accent-border: 255 85% 50%;
 
-  /* Map semantic tokens to the --color-* variables Tailwind uses */
-  --color-background: hsl(var(--background));
-  --color-foreground: hsl(var(--foreground));
-  --color-card: hsl(var(--card));
-  --color-card-foreground: hsl(var(--card-foreground));
-  --color-popover: hsl(var(--popover));
-  --color-popover-foreground: hsl(var(--popover-foreground));
-  --color-primary: hsl(var(--primary));
-  --color-primary-foreground: hsl(var(--primary-foreground));
-  --color-secondary: hsl(var(--secondary));
-  --color-secondary-foreground: hsl(var(--secondary-foreground));
-  --color-muted: hsl(var(--muted));
-  --color-muted-foreground: hsl(var(--muted-foreground));
-  --color-accent: hsl(var(--accent));
-  --color-accent-foreground: hsl(var(--accent-foreground));
-  --color-destructive: hsl(var(--destructive));
-  --color-destructive-foreground: hsl(var(--destructive-foreground));
-  --color-border: hsl(var(--border));
-  --color-primary-border: hsl(var(--primary-border));
-  --color-accent-border: hsl(var(--accent-border));
-  --color-card-border: hsl(var(--card-border));
-  --color-input: hsl(var(--input));
-  --color-ring: hsl(var(--ring));
+  /* IMPORTANT: map to raw HSL components (not wrapped in hsl(...)) */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-primary-border: var(--primary-border);
+  --color-accent-border: var(--accent-border);
+  --color-card-border: var(--card-border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
 
   /* UI helper tokens */
   --button-outline: rgba(0, 0, 0, 0.1);
@@ -89,7 +90,7 @@
   --elevate-2: rgba(0, 0, 0, 0.08);
 }
 
-/* Dark theme: mirror the same COLOR mapping but with dark values */
+/* Dark theme: mirror the same COLOR mapping but with dark values (also numeric HSL components) */
 .dark {
   --button-outline: rgba(255, 255, 255, 0.1);
   --badge-outline: rgba(255, 255, 255, 0.08);
@@ -128,29 +129,29 @@
   --primary-border: 199 86% 48%;
   --accent-border: 255 85% 58%;
 
-  /* same mappings to --color-* for dark */
-  --color-background: hsl(var(--background));
-  --color-foreground: hsl(var(--foreground));
-  --color-card: hsl(var(--card));
-  --color-card-foreground: hsl(var(--card-foreground));
-  --color-popover: hsl(var(--popover));
-  --color-popover-foreground: hsl(var(--popover-foreground));
-  --color-primary: hsl(var(--primary));
-  --color-primary-foreground: hsl(var(--primary-foreground));
-  --color-secondary: hsl(var(--secondary));
-  --color-secondary-foreground: hsl(var(--secondary-foreground));
-  --color-muted: hsl(var(--muted));
-  --color-muted-foreground: hsl(var(--muted-foreground));
-  --color-accent: hsl(var(--accent));
-  --color-accent-foreground: hsl(var(--accent-foreground));
-  --color-destructive: hsl(var(--destructive));
-  --color-destructive-foreground: hsl(var(--destructive-foreground));
-  --color-border: hsl(var(--border));
-  --color-primary-border: hsl(var(--primary-border));
-  --color-accent-border: hsl(var(--accent-border));
-  --color-card-border: hsl(var(--card-border));
-  --color-input: hsl(var(--input));
-  --color-ring: hsl(var(--ring));
+  /* same mappings to --color-* for dark (raw components) */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-primary-border: var(--primary-border);
+  --color-accent-border: var(--accent-border);
+  --color-card-border: var(--card-border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
 }
 
 @layer base {
