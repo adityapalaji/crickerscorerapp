@@ -624,7 +624,14 @@ export default function ScoringApp() {
   const isAdmin = role === "admin";
 
   const currentInnings = state.innings[state.inningsIndex];
-
+  // DEBUG: log last events and expose current innings to the page console.
+  // Remove this after debugging.
+  useEffect(() => {
+    console.log("DEBUG allBalls (last 6):", currentInnings.allBalls?.slice(-6));
+    // expose for interactive inspection in DevTools:
+    (window as any).__CURRENT_INNINGS__ = currentInnings;
+    (window as any).__ALLBALLS__ = currentInnings.allBalls;
+  }, [currentInnings.allBalls?.length]);
   const isEndOfOver =
     currentInnings.balls > 0 && currentInnings.balls % 6 === 0;
   const isAtOverBreak =
@@ -1958,125 +1965,132 @@ export default function ScoringApp() {
 
                     {/* 2) Replace your Wide Card with this */}
                     {/* --- REPLACE: Wide Card block --- */}
-                    <Card className="bg-card/60 border p-3">
+                    {/* Wide card — badge positioned absolutely on card so it cannot be clipped */}
+                    <Card className="bg-card/60 border p-3 relative">
                       <p className="text-sm font-semibold">Wide</p>
 
-                      {/* Default Wide (+2 runs) */}
-                      <Button
-                        variant="secondary"
-                        className="relative tap pressable h-10 w-full rounded-xl mb-2 inline-flex items-center justify-between"
-                        disabled={
-                          !isAdmin ||
-                          !state.setupCompleted ||
-                          needsBowlerSelection ||
-                          isOverBreak ||
-                          isSkinBreak ||
-                          !isReadyToScore ||
-                          isMatchCompleted
-                        }
-                        onClick={() => addExtra("wide", 0)}
-                      >
-                        <span>Wide (+2)</span>
+                      <div className="mt-2">
+                        {/* main wide button */}
+                        <Button
+                          variant="secondary"
+                          className="tap pressable h-10 w-full rounded-xl mb-2 inline-flex items-center justify-center"
+                          disabled={
+                            !isAdmin ||
+                            !state.setupCompleted ||
+                            needsBowlerSelection ||
+                            isOverBreak ||
+                            isSkinBreak ||
+                            !isReadyToScore ||
+                            isMatchCompleted
+                          }
+                          onClick={() => addExtra("wide", 0)}
+                        >
+                          Wide (+2)
+                        </Button>
 
-                        {/* conditional W badge when wicket recorded after last wide */}
-                        {isWicketRecordedAfterLastExtraForInn(
-                          currentInnings,
-                          "wide",
-                        ) ? (
-                          <span
-                            className="ml-2 inline-flex items-center justify-center w-5 h-5 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold"
-                            aria-hidden
-                          >
-                            W
-                          </span>
-                        ) : null}
-                      </Button>
-
-                      <div className="grid grid-cols-4 gap-1">
-                        {[1, 2, 3, 4].map((n) => (
-                          <Button
-                            key={n}
-                            variant="secondary"
-                            className="tap pressable h-10 rounded-xl px-0"
-                            disabled={
-                              !isAdmin ||
-                              !state.setupCompleted ||
-                              needsBowlerSelection ||
-                              isOverBreak ||
-                              isSkinBreak ||
-                              !isReadyToScore ||
-                              isMatchCompleted
-                            }
-                            onClick={() => addExtra("wide", n)}
-                          >
-                            +{n}
-                          </Button>
-                        ))}
+                        <div className="grid grid-cols-4 gap-1">
+                          {[1, 2, 3, 4].map((n) => (
+                            <Button
+                              key={n}
+                              variant="secondary"
+                              className="tap pressable h-10 rounded-xl px-0"
+                              disabled={
+                                !isAdmin ||
+                                !state.setupCompleted ||
+                                needsBowlerSelection ||
+                                isOverBreak ||
+                                isSkinBreak ||
+                                !isReadyToScore ||
+                                isMatchCompleted
+                              }
+                              onClick={() => addExtra("wide", n)}
+                            >
+                              +{n}
+                            </Button>
+                          ))}
+                        </div>
                       </div>
+
+                      {/* Absolute badge on the right center of the card (only shown when wicket recorded on last extra) */}
+                      {isWicketRecordedAfterLastExtraForInn(
+                        currentInnings,
+                        "wide",
+                      ) ? (
+                        <span
+                          className="w-badge-abs absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
+                          aria-hidden
+                        >
+                          W
+                        </span>
+                      ) : null}
                     </Card>
                     {/* --- END Wide Card block --- */}
 
                     {/* 3) Replace your No Ball Card with this */}
                     {/* --- REPLACE: No Ball Card block --- */}
-                    <Card className="bg-card/60 border p-3">
+                    {/* No Ball card — badge positioned absolutely on card so it cannot be clipped */}
+                    <Card className="bg-card/60 border p-3 relative">
                       <p className="text-sm font-semibold">No Ball</p>
 
-                      {/* Default No Ball (+2 runs) */}
-                      <Button
-                        variant="secondary"
-                        className="relative tap pressable h-10 w-full rounded-xl mb-2 inline-flex items-center justify-between"
-                        disabled={
-                          !isAdmin ||
-                          !state.setupCompleted ||
-                          needsBowlerSelection ||
-                          isOverBreak ||
-                          isSkinBreak ||
-                          !isReadyToScore ||
-                          isMatchCompleted
-                        }
-                        onClick={() => addExtra("noball", 0)}
-                      >
-                        <span>No Ball (+2)</span>
+                      <div className="mt-2">
+                        {/* main noball button */}
+                        <Button
+                          variant="secondary"
+                          className="tap pressable h-10 w-full rounded-xl mb-2 inline-flex items-center justify-center"
+                          disabled={
+                            !isAdmin ||
+                            !state.setupCompleted ||
+                            needsBowlerSelection ||
+                            isOverBreak ||
+                            isSkinBreak ||
+                            !isReadyToScore ||
+                            isMatchCompleted
+                          }
+                          onClick={() => addExtra("noball", 0)}
+                        >
+                          No Ball (+2)
+                        </Button>
 
-                        {/* conditional W badge when wicket recorded after last noball */}
-                        {isWicketRecordedAfterLastExtraForInn(
-                          currentInnings,
-                          "noball",
-                        ) ? (
-                          <span
-                            className="ml-2 inline-flex items-center justify-center w-5 h-5 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold"
-                            aria-hidden
-                          >
-                            W
-                          </span>
-                        ) : null}
-                      </Button>
-
-                      <div className="grid grid-cols-4 gap-1">
-                        {[1, 2, 3, 4].map((n) => (
-                          <Button
-                            key={n}
-                            variant="secondary"
-                            className="tap pressable h-10 rounded-xl px-0"
-                            disabled={
-                              !isAdmin ||
-                              !state.setupCompleted ||
-                              needsBowlerSelection ||
-                              isOverBreak ||
-                              isSkinBreak ||
-                              !isReadyToScore ||
-                              isMatchCompleted
-                            }
-                            onClick={() => addExtra("noball", n)}
-                          >
-                            +{n}
-                          </Button>
-                        ))}
+                        <div className="grid grid-cols-4 gap-1">
+                          {[1, 2, 3, 4].map((n) => (
+                            <Button
+                              key={n}
+                              variant="secondary"
+                              className="tap pressable h-10 rounded-xl px-0"
+                              disabled={
+                                !isAdmin ||
+                                !state.setupCompleted ||
+                                needsBowlerSelection ||
+                                isOverBreak ||
+                                isSkinBreak ||
+                                !isReadyToScore ||
+                                isMatchCompleted
+                              }
+                              onClick={() => addExtra("noball", n)}
+                            >
+                              +{n}
+                            </Button>
+                          ))}
+                        </div>
                       </div>
+
+                      {/* Absolute badge on the right center of the card */}
+                      {isWicketRecordedAfterLastExtraForInn(
+                        currentInnings,
+                        "noball",
+                      ) ? (
+                        <span
+                          className="w-badge-abs absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
+                          aria-hidden
+                        >
+                          W
+                        </span>
+                      ) : null}
                     </Card>
                     {/* --- END No Ball Card block --- */}
                     {/* --- REPLACE: Bye/LB SmallStepper + Wicket button --- */}
-                    <div className="mt-2 flex items-center gap-2">
+                    {/* Bye/LB + inline wicket button (centered) */}
+                    <div className="mt-2 flex items-center gap-3">
                       <div className="flex-1 min-w-0">
                         <SmallStepper
                           title="Bye/LB"
@@ -2097,11 +2111,11 @@ export default function ScoringApp() {
                         />
                       </div>
 
-                      {/* compact, circular W button aligned to center */}
+                      {/* small circular W button that is vertically centered */}
                       <div className="flex-shrink-0 flex items-center">
                         <button
                           type="button"
-                          className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow-sm"
+                          className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
                           aria-label="Record wicket"
                           title="Record wicket (-5)"
                           disabled={
