@@ -1302,28 +1302,27 @@ export default function ScoringApp() {
 
     // Prevent double wicket on same extra: check if there's already a wicket in overEvents after the extra
     if (isLastEventExtra) {
-      // Search from the end since the extra should be recent
-      let lastExtraIndex = -1;
-      for (let i = currentInn.overEvents.length - 1; i >= 0; i--) {
-        if (currentInn.overEvents[i].id === lastBall!.id) {
-          lastExtraIndex = i;
+      // Check if the most recent event after the extra (if any) is already a wicket
+      // Since allBalls and overEvents are synchronized, we can check the last few events
+      const recentEvents = currentInn.overEvents.slice(-5); // Check last 5 events for efficiency
+      let foundExtra = false;
+      for (let i = 0; i < recentEvents.length; i++) {
+        if (recentEvents[i].id === lastBall!.id) {
+          foundExtra = true;
+          // Check if any subsequent event is a wicket
+          for (let j = i + 1; j < recentEvents.length; j++) {
+            if (recentEvents[j].isWicket) {
+              toast({
+                title: "Wicket already recorded",
+                description:
+                  "A wicket has already been recorded for this delivery.",
+                variant: "destructive",
+              });
+              return;
+            }
+          }
           break;
         }
-      }
-
-      const hasWicketAfterExtra =
-        lastExtraIndex >= 0 &&
-        currentInn.overEvents
-          .slice(lastExtraIndex + 1)
-          .some((ev) => ev.isWicket);
-
-      if (hasWicketAfterExtra) {
-        toast({
-          title: "Wicket already recorded",
-          description: "A wicket has already been recorded for this delivery.",
-          variant: "destructive",
-        });
-        return;
       }
     }
 
