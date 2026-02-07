@@ -297,6 +297,22 @@ function pushHistory(state: MatchState) {
   return next;
 }
 
+// --- ADD: helper (place after type definitions, top-level) ---
+function isWicketRecordedAfterLastExtraForInn(
+  inn: Innings,
+  type: "wide" | "noball" | "bye" | "legbye",
+): boolean {
+  const all = inn.allBalls ?? [];
+  for (let i = all.length - 1; i >= 0; i--) {
+    if (all[i].type === type) {
+      // Return true only if the immediate next event exists and is a wicket
+      return Boolean(all[i + 1]?.isWicket);
+    }
+  }
+  return false;
+}
+// --- END helper ---
+
 function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
   const updatedCurrentSkin = {
     grossRuns: inn.currentSkin.grossRuns + ev.runs,
@@ -609,17 +625,6 @@ export default function ScoringApp() {
 
   const currentInnings = state.innings[state.inningsIndex];
 
-  function isWicketRecordedAfterLastExtra(type: "wide" | "noball") {
-    const all = currentInnings.allBalls ?? [];
-    // find the last index of an extra of the given type
-    for (let i = all.length - 1; i >= 0; i--) {
-      if (all[i].type === type) {
-        // return true only if the immediate next event exists and is a wicket
-        return Boolean(all[i + 1]?.isWicket);
-      }
-    }
-    return false;
-  }
   const isEndOfOver =
     currentInnings.balls > 0 && currentInnings.balls % 6 === 0;
   const isAtOverBreak =
@@ -1291,6 +1296,7 @@ export default function ScoringApp() {
     });
   }
 
+  // --- REPLACE: addWicket() ---
   function addWicket() {
     if (!isReadyToScore) {
       toast({
@@ -1349,6 +1355,7 @@ export default function ScoringApp() {
       note: "Wicket -5",
     });
   }
+  // --- END addWicket replacement ---
 
   function addExtra(type: "wide" | "noball" | "bye" | "legbye", runs: number) {
     if (!isReadyToScore) {
@@ -1948,7 +1955,9 @@ export default function ScoringApp() {
                       onClick={addWicket}
                       testId="button-wicket"
                     />
+
                     {/* 2) Replace your Wide Card with this */}
+                    {/* --- REPLACE: Wide Card block --- */}
                     <Card className="bg-card/60 border p-3">
                       <p className="text-sm font-semibold">Wide</p>
 
@@ -1970,8 +1979,14 @@ export default function ScoringApp() {
                         <span>Wide (+2)</span>
 
                         {/* conditional W badge when wicket recorded after last wide */}
-                        {isWicketRecordedAfterLastExtra("wide") ? (
-                          <span className="ml-2 inline-flex items-center justify-center w-5 h-5 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold">
+                        {isWicketRecordedAfterLastExtraForInn(
+                          currentInnings,
+                          "wide",
+                        ) ? (
+                          <span
+                            className="ml-2 inline-flex items-center justify-center w-5 h-5 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold"
+                            aria-hidden
+                          >
                             W
                           </span>
                         ) : null}
@@ -1999,8 +2014,10 @@ export default function ScoringApp() {
                         ))}
                       </div>
                     </Card>
+                    {/* --- END Wide Card block --- */}
 
                     {/* 3) Replace your No Ball Card with this */}
+                    {/* --- REPLACE: No Ball Card block --- */}
                     <Card className="bg-card/60 border p-3">
                       <p className="text-sm font-semibold">No Ball</p>
 
@@ -2022,8 +2039,14 @@ export default function ScoringApp() {
                         <span>No Ball (+2)</span>
 
                         {/* conditional W badge when wicket recorded after last noball */}
-                        {isWicketRecordedAfterLastExtra("noball") ? (
-                          <span className="ml-2 inline-flex items-center justify-center w-5 h-5 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold">
+                        {isWicketRecordedAfterLastExtraForInn(
+                          currentInnings,
+                          "noball",
+                        ) ? (
+                          <span
+                            className="ml-2 inline-flex items-center justify-center w-5 h-5 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold"
+                            aria-hidden
+                          >
                             W
                           </span>
                         ) : null}
@@ -2051,49 +2074,53 @@ export default function ScoringApp() {
                         ))}
                       </div>
                     </Card>
-<div className="mt-2 flex items-center gap-2">
-  <div className="flex-1">
-    <SmallStepper
-      title="Bye/LB"
-      onAdd={(n) => addExtra("bye", n)}
-      disabled={
-        !isAdmin ||
-        !state.setupCompleted ||
-        needsBowlerSelection ||
-        isOverBreak ||
-        isSkinBreak ||
-        !isReadyToScore ||
-        isMatchCompleted
-      }
-      testBase="bye"
-      alt
-      altAction={(n) => addExtra("legbye", n)}
-      altLabel="Leg bye"
-    />
-  </div>
+                    {/* --- END No Ball Card block --- */}
+                    {/* --- REPLACE: Bye/LB SmallStepper + Wicket button --- */}
+                    <div className="mt-2 flex items-center gap-2">
+                      <div className="flex-1">
+                        <SmallStepper
+                          title="Bye/LB"
+                          onAdd={(n) => addExtra("bye", n)}
+                          disabled={
+                            !isAdmin ||
+                            !state.setupCompleted ||
+                            needsBowlerSelection ||
+                            isOverBreak ||
+                            isSkinBreak ||
+                            !isReadyToScore ||
+                            isMatchCompleted
+                          }
+                          testBase="bye"
+                          alt
+                          altAction={(n) => addExtra("legbye", n)}
+                          altLabel="Leg bye"
+                        />
+                      </div>
 
-  {/* Wicket button next to the Bye/LB control */}
-  <div className="shrink-0">
-    <Button
-      variant="destructive"
-      className="tap pressable h-10 px-3 rounded-xl"
-      aria-label="Record wicket"
-      title="Record wicket (-5)"
-      disabled={
-        !isAdmin ||
-        !state.setupCompleted ||
-        needsBowlerSelection ||
-        isOverBreak ||
-        isSkinBreak ||
-        !isReadyToScore ||
-        isMatchCompleted
-      }
-      onClick={() => addWicket()}
-    >
-      W
-    </Button>
-  </div>
-</div>
+                      {/* Wicket button next to the Bye/LB control */}
+                      <div className="shrink-0">
+                        <Button
+                          variant="destructive"
+                          className="tap pressable h-10 px-3 rounded-xl"
+                          aria-label="Record wicket"
+                          title="Record wicket (-5)"
+                          disabled={
+                            !isAdmin ||
+                            !state.setupCompleted ||
+                            needsBowlerSelection ||
+                            isOverBreak ||
+                            isSkinBreak ||
+                            !isReadyToScore ||
+                            isMatchCompleted
+                          }
+                          onClick={() => addWicket()}
+                        >
+                          W
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                  {/* --- END Bye/LB SmallStepper + Wicket button --- */}
 
                   <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
