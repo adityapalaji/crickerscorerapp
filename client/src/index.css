@@ -1,5 +1,10 @@
-@import "tailwindcss";
+/* Optional: import any third-party CSS AFTER Tailwind if needed */
+/* e.g. animations library (install in client first): */
 @import "tw-animate-css";
+/* client/src/index.css - top of file */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 @custom-variant dark (&:is(.dark *));
 
@@ -37,7 +42,7 @@
 }
 
 :root {
-  --button-outline: rgba(0, 0, 0, 0.10);
+  --button-outline: rgba(0, 0, 0, 0.1);
   --badge-outline: rgba(0, 0, 0, 0.06);
   --opaque-button-border-intensity: -8;
   --elevate-1: rgba(0, 0, 0, 0.03);
@@ -72,20 +77,22 @@
   --destructive-foreground: 210 40% 98%;
 
   --radius: 14px;
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
-    "Segoe UI Emoji";
-  --font-display: "Fraunces", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  --font-sans:
+    "Inter", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+    Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  --font-display:
+    "Fraunces", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
 
   --primary-border: 199 86% 42%;
   --accent-border: 255 85% 50%;
 }
 
 .dark {
-  --button-outline: rgba(255, 255, 255, 0.10);
+  --button-outline: rgba(255, 255, 255, 0.1);
   --badge-outline: rgba(255, 255, 255, 0.08);
   --opaque-button-border-intensity: 9;
   --elevate-1: rgba(255, 255, 255, 0.04);
-  --elevate-2: rgba(255, 255, 255, 0.10);
+  --elevate-2: rgba(255, 255, 255, 0.1);
 
   --background: 222 35% 8%;
   --foreground: 210 40% 96%;
@@ -143,8 +150,16 @@
 
   .app-shell {
     background:
-      radial-gradient(1200px 700px at 10% 0%, hsl(199 86% 49% / 0.14), transparent 55%),
-      radial-gradient(900px 520px at 95% 15%, hsl(255 85% 58% / 0.12), transparent 55%),
+      radial-gradient(
+        1200px 700px at 10% 0%,
+        hsl(199 86% 49% / 0.14),
+        transparent 55%
+      ),
+      radial-gradient(
+        900px 520px at 95% 15%,
+        hsl(255 85% 58% / 0.12),
+        transparent 55%
+      ),
       linear-gradient(to bottom, hsl(var(--background)), hsl(var(--background)));
   }
 
@@ -154,7 +169,7 @@
     border: 1px solid hsl(var(--card-border) / 0.65);
     box-shadow:
       0 1px 0 hsl(0 0% 100% / 0.65) inset,
-      0 16px 44px hsl(222 35% 8% / 0.10);
+      0 16px 44px hsl(222 35% 8% / 0.1);
   }
 
   .tap {
@@ -162,7 +177,10 @@
   }
 
   .pressable {
-    transition: transform 120ms ease, box-shadow 180ms ease, background-color 180ms ease;
+    transition:
+      transform 120ms ease,
+      box-shadow 180ms ease,
+      background-color 180ms ease;
   }
 
   .pressable:active {
