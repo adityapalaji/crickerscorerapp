@@ -1964,7 +1964,7 @@ export default function ScoringApp() {
                       {/* Default Wide (+2 runs) */}
                       <Button
                         variant="secondary"
-                        className="tap pressable h-10 w-full rounded-xl mb-2 inline-flex items-center justify-between"
+                        className="relative tap pressable h-10 w-full rounded-xl mb-2 inline-flex items-center justify-between"
                         disabled={
                           !isAdmin ||
                           !state.setupCompleted ||
@@ -2024,7 +2024,7 @@ export default function ScoringApp() {
                       {/* Default No Ball (+2 runs) */}
                       <Button
                         variant="secondary"
-                        className="tap pressable h-10 w-full rounded-xl mb-2 inline-flex items-center justify-between"
+                        className="relative tap pressable h-10 w-full rounded-xl mb-2 inline-flex items-center justify-between"
                         disabled={
                           !isAdmin ||
                           !state.setupCompleted ||
@@ -2077,7 +2077,7 @@ export default function ScoringApp() {
                     {/* --- END No Ball Card block --- */}
                     {/* --- REPLACE: Bye/LB SmallStepper + Wicket button --- */}
                     <div className="mt-2 flex items-center gap-2">
-                      <div className="flex-1">
+                      <div className="flex-1 min-w-0">
                         <SmallStepper
                           title="Bye/LB"
                           onAdd={(n) => addExtra("bye", n)}
@@ -2097,11 +2097,11 @@ export default function ScoringApp() {
                         />
                       </div>
 
-                      {/* Wicket button next to the Bye/LB control */}
-                      <div className="shrink-0">
-                        <Button
-                          variant="destructive"
-                          className="tap pressable h-10 px-3 rounded-xl"
+                      {/* compact, circular W button aligned to center */}
+                      <div className="flex-shrink-0 flex items-center">
+                        <button
+                          type="button"
+                          className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow-sm"
                           aria-label="Record wicket"
                           title="Record wicket (-5)"
                           disabled={
@@ -2116,7 +2116,7 @@ export default function ScoringApp() {
                           onClick={() => addWicket()}
                         >
                           W
-                        </Button>
+                        </button>
                       </div>
                     </div>
                   </div>
