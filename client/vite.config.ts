@@ -1,10 +1,11 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import path from "path";
+// client/vite.config.ts
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import tsconfigPaths from 'vite-tsconfig-paths'
 
 export default defineConfig({
-  plugins: [react()],
-  css: {
-    postcss: path.resolve(__dirname, "postcss.config.js")
-  }
-});
+  plugins: [
+    react(),
+    tsconfigPaths() // <-- adds support for "@" / tsconfig paths
+  ],
+})
