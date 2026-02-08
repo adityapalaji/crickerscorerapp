@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { useLocation, useRoute } from "wouter";
 import { motion } from "framer-motion";
 import {
@@ -561,6 +561,8 @@ export default function ScoringApp() {
   });
 
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  const wicketLockRef = useRef(false);
 
   // Toss UI local state (place immediately after your `state` useState)
   const [tossWinnerSel, setTossWinnerSel] = useState<"a" | "b" | "">(
@@ -1332,6 +1334,11 @@ export default function ScoringApp() {
   // 1) Merge wicket into the last extra of the given type (used by the inline W on extra cards)
   // inside ScoringApp: merge wicket into last extra (no appends)
   function addWicketOnExtra(type: "wide" | "noball" | "bye" | "legbye") {
+    // lock to avoid double-fire
+    if (wicketLockRef.current) return;
+    wicketLockRef.current = true;
+    setTimeout(() => (wicketLockRef.current = false), 350);
+
     if (
       !isAdmin ||
       !state.setupCompleted ||
@@ -1384,7 +1391,7 @@ export default function ScoringApp() {
       return;
     }
 
-    // MERGE: mark the extra event as a wicket, but keep its runs unchanged (extras remain gross runs).
+    // MERGE: mark the existing extra event as a wicket but DO NOT change runs.
     const mergedEvent: BallEvent = {
       ...last,
       isWicket: true,
@@ -1398,13 +1405,11 @@ export default function ScoringApp() {
     const updatedInn: Innings = {
       ...prevInn,
       allBalls: [...(prevInn.allBalls ?? []).slice(0, -1), mergedEvent],
-      // runs unchanged because mergedEvent.runs is same as last.runs
-      runs: prevInn.runs + (mergedEvent.runs ?? 0) - (last.runs ?? 0),
+      runs: prevInn.runs + (mergedEvent.runs ?? 0) - (last.runs ?? 0), // unchanged because runs are same
       wickets: prevInn.wickets + 1,
       currentSkin: {
         ...prevInn.currentSkin,
         wickets: prevInn.currentSkin.wickets + 1,
-        // grossRuns unchanged by wicket marking (we replaced last.runs with same value)
         grossRuns:
           prevInn.currentSkin.grossRuns +
           (mergedEvent.runs ?? 0) -
@@ -1423,10 +1428,16 @@ export default function ScoringApp() {
       description: `${type} recorded with wicket (same delivery).`,
     });
   }
+
   // Attach wicket to last extra if it's a bye or legbye
   // Attach wicket to last Bye or Leg-bye (used by inline W on Bye/LB card).
   // PLACE this inside the ScoringApp component (where your other helpers live).
   function addWicketToLastByeOrLegbye() {
+    // same lock
+    if (wicketLockRef.current) return;
+    wicketLockRef.current = true;
+    setTimeout(() => (wicketLockRef.current = false), 350);
+
     if (
       !isAdmin ||
       !state.setupCompleted ||
@@ -1459,7 +1470,6 @@ export default function ScoringApp() {
       return;
     }
 
-    // Allow attach only if last is bye or legbye
     if (last.type !== "bye" && last.type !== "legbye") {
       toast({
         title: "Cannot attach wicket",
@@ -1478,15 +1488,11 @@ export default function ScoringApp() {
       return;
     }
 
-    // Merge runs (apply -5 penalty) and mark wicket
-    const mergedRuns = (last.runs ?? 0) - 5;
+    // MERGE only (do not append)
     const mergedEvent: BallEvent = {
       ...last,
       isWicket: true,
-      runs: mergedRuns,
-      note: last.note
-        ? `${last.note} • Wicket on extra -5`
-        : "Wicket on extra -5",
+      note: last.note ? `${last.note} • Wicket on extra` : "Wicket on extra",
       id: last.id,
     };
 
@@ -1512,22 +1518,21 @@ export default function ScoringApp() {
 
     const nextInnings = [...withHistory.innings];
     nextInnings[innIndex] = updatedInn;
-    const nextState: MatchState = {
-      ...withHistory,
-      innings: nextInnings,
-      updatedAt: Date.now(),
-    };
-
-    // commit merged state (safeSet exists in the file)
-    safeSet(nextState);
+    safeSet({ ...withHistory, innings: nextInnings, updatedAt: Date.now() });
 
     toast({
       title: "Wicket on extra",
       description: "Bye/Leg-bye recorded with wicket (same delivery).",
     });
   }
+
   // 2) Append a normal wicket as a separate delivery (this is the global W button behavior)
   function addWicket() {
+    // lock
+    if (wicketLockRef.current) return;
+    wicketLockRef.current = true;
+    setTimeout(() => (wicketLockRef.current = false), 350);
+
     if (
       !isAdmin ||
       !state.setupCompleted ||
@@ -1551,7 +1556,7 @@ export default function ScoringApp() {
     const all = inn.allBalls ?? [];
     const last = all[all.length - 1];
 
-    // Prevent duplicate wicket events only if the last event itself is a wicket event
+    // block only when the last event itself is a wicket event
     if (last?.type === "wicket") {
       toast({
         title: "Wicket already recorded",
@@ -1562,12 +1567,12 @@ export default function ScoringApp() {
       return;
     }
 
-    // IMPORTANT: append a wicket with runs: 0. The net penalty is applied via wickets * WICKET_PENALTY.
+    // IMPORTANT: append wicket with runs: 0 — wickets count applies the penalty
     addEvent({
       id: uid("ball"),
       ts: Date.now(),
       type: "wicket",
-      runs: 0, // <- do NOT use -5 here
+      runs: 0,
       countsBall: true,
       isWicket: true,
       note: "Wicket",
@@ -2202,12 +2207,12 @@ export default function ScoringApp() {
                         {/* Inline W to attach wicket to this extra (same delivery) */}
                         <button
                           type="button"
-                          className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
+                          className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow z-20"
                           title="Wicket on this extra"
                           aria-label="Wicket on this extra"
                           onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
                             e.stopPropagation();
-                            addWicketOnExtra("wide");
+                            addWicketOnExtra("wide"); // or "wide"
                           }}
                           disabled={
                             !isAdmin ||
@@ -2282,12 +2287,12 @@ export default function ScoringApp() {
                         {/* Inline W to attach wicket to this extra (same delivery) */}
                         <button
                           type="button"
-                          className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
+                          className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow z-20"
                           title="Wicket on this extra"
                           aria-label="Wicket on this extra"
                           onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
                             e.stopPropagation();
-                            addWicketOnExtra("noball");
+                            addWicketOnExtra("noball"); // or "wide"
                           }}
                           disabled={
                             !isAdmin ||
@@ -2361,11 +2366,11 @@ export default function ScoringApp() {
                       {/* Inline W attached to the card (absolute ensures vertical centering) */}
                       <button
                         type="button"
-                        className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
-                        aria-label="Record wicket on Bye/Legbye"
-                        title="Record wicket (-5) on this extra"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow z-20"
+                        aria-label="Wicket on Bye/Legbye"
+                        title="Wicket on this extra"
                         onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
-                          e.stopPropagation(); // <- important: prevents SmallStepper/addExtra firing
+                          e.stopPropagation();
                           addWicketToLastByeOrLegbye();
                         }}
                         disabled={
