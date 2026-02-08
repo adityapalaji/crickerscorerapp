@@ -1320,7 +1320,26 @@ export default function ScoringApp() {
   // the correct one (e.g. `setMatchState`, `setAppState`, etc.).
   // --- ADD / REPLACE inside ScoringApp component ---
   // 1) Merge wicket into the last extra of the given type (used by the inline W on extra cards)
+  // inside ScoringApp: merge wicket into last extra (no appends)
   function addWicketOnExtra(type: "wide" | "noball" | "bye" | "legbye") {
+    if (
+      !isAdmin ||
+      !state.setupCompleted ||
+      needsBowlerSelection ||
+      isOverBreak ||
+      isSkinBreak ||
+      !isReadyToScore ||
+      isMatchCompleted
+    ) {
+      toast({
+        title: "Cannot record wicket",
+        description:
+          "Make sure scoreboard is ready and bowler/players are selected.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const innIndex = state.inningsIndex;
     const inn = state.innings[innIndex];
     const all = inn.allBalls ?? [];
@@ -1335,7 +1354,9 @@ export default function ScoringApp() {
       return;
     }
 
-    if (last.type !== type) {
+    const extraMatches =
+      last.type === type || (type === "bye" && last.type === "legbye");
+    if (!extraMatches) {
       toast({
         title: "Cannot attach wicket",
         description: `The last event is not a ${type}. Use the W button on that extra immediately after recording it.`,
@@ -1353,7 +1374,7 @@ export default function ScoringApp() {
       return;
     }
 
-    // Build merged event: keep countsBall, id, etc; apply wicket penalty (-5)
+    // Build merged event: keep countsBall and id; apply wicket penalty (-5)
     const mergedRuns = (last.runs ?? 0) - 5;
     const mergedEvent: BallEvent = {
       ...last,
@@ -1365,14 +1386,13 @@ export default function ScoringApp() {
       id: last.id,
     };
 
-    // Snapshot history and update innings (use your pushHistory helper)
+    // Snapshot history and update innings (do NOT append any new events)
     const withHistory = pushHistory(state);
     const prevInn = withHistory.innings[innIndex];
 
     const updatedInn: Innings = {
       ...prevInn,
       allBalls: [...(prevInn.allBalls ?? []).slice(0, -1), mergedEvent],
-      // Update totals: adjust runs by delta, increment wickets, preserve countsBall for balls
       runs: prevInn.runs + (mergedEvent.runs ?? 0) - (last.runs ?? 0),
       wickets: prevInn.wickets + 1,
       currentSkin: {
@@ -1384,7 +1404,7 @@ export default function ScoringApp() {
           (last.runs ?? 0),
       },
       overEvents: [...(prevInn.overEvents ?? []).slice(0, -1), mergedEvent],
-      // deliveries/balls unchanged because extra.countsBall is preserved
+      dotBalls: mergedEvent.type === "dot" ? prevInn.dotBalls + 1 : 0,
     };
 
     const nextInnings = [...withHistory.innings];
@@ -1395,18 +1415,41 @@ export default function ScoringApp() {
       updatedAt: Date.now(),
     };
 
-    // Commit the state — REPLACE setState with your actual state setter (e.g. safeSet or setMatchState)
-    setState(nextState);
+    // commit using your existing safeSet helper (already in this file)
+    safeSet(nextState);
 
     toast({
       title: "Wicket on extra",
-      description: `${type} recorded with wicket. Delivery updated.`,
+      description: `${type} recorded with wicket (same delivery).`,
     });
   }
   // Attach wicket to last extra if it's a bye or legbye
+  // Attach wicket to last Bye or Leg-bye (used by inline W on Bye/LB card).
+  // PLACE this inside the ScoringApp component (where your other helpers live).
   function addWicketToLastByeOrLegbye() {
-    const inn = state.innings[state.inningsIndex];
-    const last = (inn.allBalls ?? [])[(inn.allBalls ?? []).length - 1];
+    if (
+      !isAdmin ||
+      !state.setupCompleted ||
+      needsBowlerSelection ||
+      isOverBreak ||
+      isSkinBreak ||
+      !isReadyToScore ||
+      isMatchCompleted
+    ) {
+      toast({
+        title: "Cannot record wicket",
+        description:
+          "Make sure scoreboard is ready and bowler/players are selected.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const innIndex = state.inningsIndex;
+    const inn = state.innings[innIndex];
+    const all = inn.allBalls ?? [];
+    const last = all[all.length - 1];
+
     if (!last) {
       toast({
         title: "No delivery",
@@ -1415,12 +1458,72 @@ export default function ScoringApp() {
       });
       return;
     }
-    if (last.type === "bye") return addWicketOnExtra("bye");
-    if (last.type === "legbye") return addWicketOnExtra("legbye");
+
+    // Allow attach only if last is bye or legbye
+    if (last.type !== "bye" && last.type !== "legbye") {
+      toast({
+        title: "Cannot attach wicket",
+        description: "The last event is not a Bye or Leg-bye.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (last.isWicket || last.type === "wicket") {
+      toast({
+        title: "Wicket already present",
+        description: "This delivery already has a wicket.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Merge runs (apply -5 penalty) and mark wicket
+    const mergedRuns = (last.runs ?? 0) - 5;
+    const mergedEvent: BallEvent = {
+      ...last,
+      isWicket: true,
+      runs: mergedRuns,
+      note: last.note
+        ? `${last.note} • Wicket on extra -5`
+        : "Wicket on extra -5",
+      id: last.id,
+    };
+
+    const withHistory = pushHistory(state);
+    const prevInn = withHistory.innings[innIndex];
+
+    const updatedInn: Innings = {
+      ...prevInn,
+      allBalls: [...(prevInn.allBalls ?? []).slice(0, -1), mergedEvent],
+      runs: prevInn.runs + (mergedEvent.runs ?? 0) - (last.runs ?? 0),
+      wickets: prevInn.wickets + 1,
+      currentSkin: {
+        ...prevInn.currentSkin,
+        wickets: prevInn.currentSkin.wickets + 1,
+        grossRuns:
+          prevInn.currentSkin.grossRuns +
+          (mergedEvent.runs ?? 0) -
+          (last.runs ?? 0),
+      },
+      overEvents: [...(prevInn.overEvents ?? []).slice(0, -1), mergedEvent],
+      dotBalls: mergedEvent.type === "dot" ? prevInn.dotBalls + 1 : 0,
+    };
+
+    const nextInnings = [...withHistory.innings];
+    nextInnings[innIndex] = updatedInn;
+    const nextState: MatchState = {
+      ...withHistory,
+      innings: nextInnings,
+      updatedAt: Date.now(),
+    };
+
+    // commit merged state (safeSet exists in the file)
+    safeSet(nextState);
+
     toast({
-      title: "Cannot attach wicket",
-      description: "Last event is not a Bye or Leg-bye.",
-      variant: "destructive",
+      title: "Wicket on extra",
+      description: "Bye/Leg-bye recorded with wicket (same delivery).",
     });
   }
   // 2) Append a normal wicket as a separate delivery (this is the global W button behavior)
@@ -1450,11 +1553,13 @@ export default function ScoringApp() {
     const last = all[all.length - 1];
 
     // Prevent double-wicket on same event
-    if (last?.isWicket || last?.type === "wicket") {
+    // inside addWicket()
+    // Prevent double-wicket only when the last event itself is a wicket event
+    if (last?.type === "wicket") {
       toast({
         title: "Wicket already recorded",
         description:
-          "A wicket has already been recorded for the last delivery.",
+          "A wicket event has already been recorded for the last delivery.",
         variant: "destructive",
       });
       return;
@@ -2103,7 +2208,10 @@ export default function ScoringApp() {
                           className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
                           title="Wicket on this extra"
                           aria-label="Wicket on this extra"
-                          onClick={() => addWicketOnExtra("wide")}
+                          onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
+                            e.stopPropagation();
+                            addWicketOnExtra("wide");
+                          }}
                           disabled={
                             !isAdmin ||
                             !state.setupCompleted ||
@@ -2138,14 +2246,15 @@ export default function ScoringApp() {
                             </Button>
                           ))}
                         </div>
+                        {isExtraMarkedWicket(currentInnings, "wide") ? (
+                          <span
+                            className="w-badge-abs absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
+                            aria-hidden
+                          >
+                            W
+                          </span>
+                        ) : null}
                       </div>
-
-                      {/* Absolute badge on the right center of the card (only shown when wicket recorded on last extra) */}
-                      {isExtraMarkedWicket(currentInnings, "wide") ? (
-                        <span className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow">
-                          W
-                        </span>
-                      ) : null}
                     </Card>
                     {/* --- END Wide Card block --- */}
 
@@ -2179,7 +2288,10 @@ export default function ScoringApp() {
                           className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
                           title="Wicket on this extra"
                           aria-label="Wicket on this extra"
-                          onClick={() => addWicketOnExtra("noball")}
+                          onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
+                            e.stopPropagation();
+                            addWicketOnExtra("noball");
+                          }}
                           disabled={
                             !isAdmin ||
                             !state.setupCompleted ||
@@ -2214,17 +2326,15 @@ export default function ScoringApp() {
                             </Button>
                           ))}
                         </div>
+                        {isExtraMarkedWicket(currentInnings, "wide") ? (
+                          <span
+                            className="w-badge-abs absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
+                            aria-hidden
+                          >
+                            W
+                          </span>
+                        ) : null}
                       </div>
-
-                      {/* Absolute badge on the right center of the card */}
-                      {isExtraMarkedWicket(currentInnings, "noball") ? (
-                        <span
-                          className="w-badge-abs absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
-                          aria-hidden
-                        >
-                          W
-                        </span>
-                      ) : null}
                     </Card>
                     {/* --- END No Ball Card block --- */}
                     {/* --- REPLACE: Bye/LB SmallStepper + Wicket button --- */}
@@ -2257,7 +2367,10 @@ export default function ScoringApp() {
                         className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
                         aria-label="Record wicket on Bye/Legbye"
                         title="Record wicket (-5) on this extra"
-                        onClick={() => addWicketToLastByeOrLegbye()}
+                        onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
+                          e.stopPropagation(); // <- important: prevents SmallStepper/addExtra firing
+                          addWicketToLastByeOrLegbye();
+                        }}
                         disabled={
                           !isAdmin ||
                           !state.setupCompleted ||
@@ -2270,6 +2383,15 @@ export default function ScoringApp() {
                       >
                         W
                       </button>
+                      {isExtraMarkedWicket(currentInnings, "bye") ||
+                      isExtraMarkedWicket(currentInnings, "legbye") ? (
+                        <span
+                          className="w-badge-abs absolute left-3 top-3 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
+                          aria-hidden
+                        >
+                          W
+                        </span>
+                      ) : null}
                     </div>
                   </div>
                   {/* --- END Bye/LB SmallStepper + Wicket button --- */}
