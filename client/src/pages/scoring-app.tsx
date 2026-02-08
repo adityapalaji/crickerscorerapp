@@ -633,6 +633,16 @@ export default function ScoringApp() {
   const currentInnings = state.innings[state.inningsIndex];
   // DEBUG: log last events and expose current innings to the page console.
   // Remove this after debugging.
+
+  // DEBUG (temporary): expose current innings & last events to window for investigation.
+  // Paste this immediately after `const currentInnings = state.innings[state.inningsIndex];`
+  useEffect(() => {
+    (window as any).__CURRENT_INNINGS__ = currentInnings;
+    (window as any).__ALLBALLS__ = currentInnings.allBalls;
+    console.log(
+      "DEBUG: exposed __CURRENT_INNINGS__ and __ALLBALLS__ (remove after debugging)",
+    );
+  }, [currentInnings.allBalls?.length]);
   useEffect(() => {
     console.log("DEBUG allBalls (last 6):", currentInnings.allBalls?.slice(-6));
     // expose for interactive inspection in DevTools:
@@ -1322,6 +1332,12 @@ export default function ScoringApp() {
   // 1) Merge wicket into the last extra of the given type (used by the inline W on extra cards)
   // inside ScoringApp: merge wicket into last extra (no appends)
   function addWicketOnExtra(type: "wide" | "noball" | "bye" | "legbye") {
+    // inside addWicketOnExtra(...)
+    console.log("[DEBUG] addWicketOnExtra called for", type);
+    console.log(
+      "[DEBUG] last event before merge:",
+      (state.innings[state.inningsIndex].allBalls ?? []).slice(-3),
+    );
     if (
       !isAdmin ||
       !state.setupCompleted ||
@@ -1528,6 +1544,12 @@ export default function ScoringApp() {
   }
   // 2) Append a normal wicket as a separate delivery (this is the global W button behavior)
   function addWicket() {
+    // inside addWicket()
+    console.log("[DEBUG] addWicket (global) called");
+    console.log(
+      "[DEBUG] last event before append:",
+      (state.innings[state.inningsIndex].allBalls ?? []).slice(-3),
+    );
     // same guards you already use
     if (
       !isAdmin ||
