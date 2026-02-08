@@ -1338,7 +1338,7 @@ export default function ScoringApp() {
     wicketLockRef.current = true;
     setTimeout(() => (wicketLockRef.current = false), 350);
 
-    if (!isAdmin || !state.setupCompleted || isMatchCompleted) {
+    if (!isAdmin || !state.setupCompleted) {
       toast({
         title: "Cannot record wicket",
         description: "Make sure scoreboard is ready and you are the scorer.",
@@ -1466,7 +1466,7 @@ export default function ScoringApp() {
     wicketLockRef.current = true;
     setTimeout(() => (wicketLockRef.current = false), 350);
 
-    if (!isAdmin || !state.setupCompleted || isMatchCompleted) {
+    if (!isAdmin || !state.setupCompleted) {
       toast({
         title: "Cannot record wicket",
         description: "Make sure scoreboard is ready and you are the scorer.",
@@ -1762,7 +1762,7 @@ export default function ScoringApp() {
     if (last.isWicket || last.type === "wicket") return false;
 
     // Require admin and match not completed; allow even during over-break/skin-break
-    if (!isAdmin || !state.setupCompleted || isMatchCompleted) return false;
+    if (!isAdmin || !state.setupCompleted) return false;
 
     return true;
   }
