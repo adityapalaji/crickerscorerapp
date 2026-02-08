@@ -1389,9 +1389,47 @@ export default function ScoringApp() {
       id: last.id,
     };
 
+    // --- REPLACE the previous updatedInn construction with this robust version ---
+    // (use this in addWicketOnExtra and addWicketToLastByeOrLegbye)
+
     const withHistory = pushHistory(state);
     const prevInn = withHistory.innings[innIndex];
 
+    // Decide which array contained the last event and replace it there
+    const prevOverEvents = prevInn.overEvents ?? [];
+    const prevLastOverSummary = prevInn.lastOverSummary ?? [];
+
+    // helper to find by id
+    const findIndexById = (arr: BallEvent[], id: string) =>
+      arr ? arr.findIndex((ev) => ev.id === id) : -1;
+
+    const idxInOver = findIndexById(prevOverEvents, last.id);
+    const idxInLastOver = findIndexById(prevLastOverSummary, last.id);
+
+    let newOverEvents: BallEvent[] = [...prevOverEvents];
+    let newLastOverSummary: BallEvent[] = [...prevLastOverSummary];
+
+    // Replace in the correct container
+    if (idxInOver >= 0) {
+      // last event was in current overEvents
+      newOverEvents = [
+        ...prevOverEvents.slice(0, idxInOver),
+        mergedEvent,
+        ...prevOverEvents.slice(idxInOver + 1),
+      ];
+    } else if (idxInLastOver >= 0) {
+      // last event was in lastOverSummary (previously completed over)
+      newLastOverSummary = [
+        ...prevLastOverSummary.slice(0, idxInLastOver),
+        mergedEvent,
+        ...prevLastOverSummary.slice(idxInLastOver + 1),
+      ];
+    } else {
+      // fallback: replace the last item of overEvents (previous behaviour)
+      newOverEvents = [...prevOverEvents.slice(0, -1), mergedEvent];
+    }
+
+    // Recompute runs/wickets/currentSkin consistently (mergedEvent.runs equals last.runs for extra merge)
     const updatedInn: Innings = {
       ...prevInn,
       allBalls: [...(prevInn.allBalls ?? []).slice(0, -1), mergedEvent],
@@ -1405,7 +1443,8 @@ export default function ScoringApp() {
           (mergedEvent.runs ?? 0) -
           (last.runs ?? 0),
       },
-      overEvents: [...(prevInn.overEvents ?? []).slice(0, -1), mergedEvent],
+      overEvents: newOverEvents,
+      lastOverSummary: newLastOverSummary,
       dotBalls: mergedEvent.type === "dot" ? prevInn.dotBalls + 1 : 0,
     };
 
@@ -1475,9 +1514,47 @@ export default function ScoringApp() {
       id: last.id,
     };
 
+    // --- REPLACE the previous updatedInn construction with this robust version ---
+    // (use this in addWicketOnExtra and addWicketToLastByeOrLegbye)
+
     const withHistory = pushHistory(state);
     const prevInn = withHistory.innings[innIndex];
 
+    // Decide which array contained the last event and replace it there
+    const prevOverEvents = prevInn.overEvents ?? [];
+    const prevLastOverSummary = prevInn.lastOverSummary ?? [];
+
+    // helper to find by id
+    const findIndexById = (arr: BallEvent[], id: string) =>
+      arr ? arr.findIndex((ev) => ev.id === id) : -1;
+
+    const idxInOver = findIndexById(prevOverEvents, last.id);
+    const idxInLastOver = findIndexById(prevLastOverSummary, last.id);
+
+    let newOverEvents: BallEvent[] = [...prevOverEvents];
+    let newLastOverSummary: BallEvent[] = [...prevLastOverSummary];
+
+    // Replace in the correct container
+    if (idxInOver >= 0) {
+      // last event was in current overEvents
+      newOverEvents = [
+        ...prevOverEvents.slice(0, idxInOver),
+        mergedEvent,
+        ...prevOverEvents.slice(idxInOver + 1),
+      ];
+    } else if (idxInLastOver >= 0) {
+      // last event was in lastOverSummary (previously completed over)
+      newLastOverSummary = [
+        ...prevLastOverSummary.slice(0, idxInLastOver),
+        mergedEvent,
+        ...prevLastOverSummary.slice(idxInLastOver + 1),
+      ];
+    } else {
+      // fallback: replace the last item of overEvents (previous behaviour)
+      newOverEvents = [...prevOverEvents.slice(0, -1), mergedEvent];
+    }
+
+    // Recompute runs/wickets/currentSkin consistently (mergedEvent.runs equals last.runs for extra merge)
     const updatedInn: Innings = {
       ...prevInn,
       allBalls: [...(prevInn.allBalls ?? []).slice(0, -1), mergedEvent],
@@ -1491,7 +1568,8 @@ export default function ScoringApp() {
           (mergedEvent.runs ?? 0) -
           (last.runs ?? 0),
       },
-      overEvents: [...(prevInn.overEvents ?? []).slice(0, -1), mergedEvent],
+      overEvents: newOverEvents,
+      lastOverSummary: newLastOverSummary,
       dotBalls: mergedEvent.type === "dot" ? prevInn.dotBalls + 1 : 0,
     };
 
@@ -2324,7 +2402,9 @@ export default function ScoringApp() {
                     {/* --- REPLACE: Bye/LB SmallStepper + Wicket button --- */}
                     {/* Bye/LB + inline wicket button (centered) */}
                     {/* Bye/LB — place inline W absolutely so it stays aligned */}
-                    <div className="mt-2 relative">
+                    <div className="mt-2 relative pt-6">
+                      {" "}
+                      {/* <-- add top padding to reserve header area */}
                       <div className="min-w-0">
                         <SmallStepper
                           title="Bye/LB"
@@ -2344,9 +2424,7 @@ export default function ScoringApp() {
                           altLabel="Leg bye"
                         />
                       </div>
-
-                      {/* Show the inline W button only when the current Bye/Legbye is NOT already marked wicket.
-      When it is marked, show the small W badge instead (so only one W is visible). */}
+                      {/* Inline W button (hidden once extra is marked) */}
                       {!isExtraMarkedWicket(currentInnings, "bye") &&
                       !isExtraMarkedWicket(currentInnings, "legbye") ? (
                         <button
@@ -2363,12 +2441,11 @@ export default function ScoringApp() {
                           W
                         </button>
                       ) : null}
-
-                      {/* Persistent W badge (shows when the extra has been marked wicket) */}
+                      {/* Persistent W badge (top-left) — positioned using top/left that match the header area */}
                       {isExtraMarkedWicket(currentInnings, "bye") ||
                       isExtraMarkedWicket(currentInnings, "legbye") ? (
                         <span
-                          className="w-badge-abs absolute left-3 top-3 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
+                          className="absolute left-3 top-2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow pointer-events-none"
                           aria-hidden
                         >
                           W
