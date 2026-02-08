@@ -1585,6 +1585,7 @@ export default function ScoringApp() {
 
   // 2) Append a normal wicket as a separate delivery (this is the global W button behavior)
   function addWicket() {
+    // short lock to avoid double clicks (keeps UI safe)
     if (wicketLockRef.current) return;
     wicketLockRef.current = true;
     setTimeout(() => (wicketLockRef.current = false), 350);
@@ -1603,15 +1604,20 @@ export default function ScoringApp() {
     const all = inn.allBalls ?? [];
     const last = all[all.length - 1];
 
-    // block only if last itself is a wicket event
+    // Allow back-to-back wickets, but block obvious duplicate appends:
+    // If the last event is a wicket and it happened *very recently* (within 750ms),
+    // treat this as a duplicate and block it. Otherwise allow appending another wicket.
     if (last?.type === "wicket") {
-      toast({
-        title: "Wicket already recorded",
-        description:
-          "A wicket event has already been recorded for the last delivery.",
-        variant: "destructive",
-      });
-      return;
+      const recentDuplicateWindowMs = 750;
+      if (Date.now() - (last.ts ?? 0) < recentDuplicateWindowMs) {
+        toast({
+          title: "Wicket already recorded",
+          description:
+            "A wicket event has already been recorded for the last delivery.",
+          variant: "destructive",
+        });
+        return;
+      }
     }
 
     // append wicket with runs: 0 (penalty applied via wickets * WICKET_PENALTY)
