@@ -1332,12 +1332,6 @@ export default function ScoringApp() {
   // 1) Merge wicket into the last extra of the given type (used by the inline W on extra cards)
   // inside ScoringApp: merge wicket into last extra (no appends)
   function addWicketOnExtra(type: "wide" | "noball" | "bye" | "legbye") {
-    // inside addWicketOnExtra(...)
-    console.log("[DEBUG] addWicketOnExtra called for", type);
-    console.log(
-      "[DEBUG] last event before merge:",
-      (state.innings[state.inningsIndex].allBalls ?? []).slice(-3),
-    );
     if (
       !isAdmin ||
       !state.setupCompleted ||
@@ -1390,30 +1384,27 @@ export default function ScoringApp() {
       return;
     }
 
-    // Build merged event: keep countsBall and id; apply wicket penalty (-5)
-    const mergedRuns = (last.runs ?? 0) - 5;
+    // MERGE: mark the extra event as a wicket, but keep its runs unchanged (extras remain gross runs).
     const mergedEvent: BallEvent = {
       ...last,
       isWicket: true,
-      runs: mergedRuns,
-      note: last.note
-        ? `${last.note} • Wicket on extra -5`
-        : "Wicket on extra -5",
+      note: last.note ? `${last.note} • Wicket on extra` : "Wicket on extra",
       id: last.id,
     };
 
-    // Snapshot history and update innings (do NOT append any new events)
     const withHistory = pushHistory(state);
     const prevInn = withHistory.innings[innIndex];
 
     const updatedInn: Innings = {
       ...prevInn,
       allBalls: [...(prevInn.allBalls ?? []).slice(0, -1), mergedEvent],
+      // runs unchanged because mergedEvent.runs is same as last.runs
       runs: prevInn.runs + (mergedEvent.runs ?? 0) - (last.runs ?? 0),
       wickets: prevInn.wickets + 1,
       currentSkin: {
         ...prevInn.currentSkin,
         wickets: prevInn.currentSkin.wickets + 1,
+        // grossRuns unchanged by wicket marking (we replaced last.runs with same value)
         grossRuns:
           prevInn.currentSkin.grossRuns +
           (mergedEvent.runs ?? 0) -
@@ -1425,14 +1416,7 @@ export default function ScoringApp() {
 
     const nextInnings = [...withHistory.innings];
     nextInnings[innIndex] = updatedInn;
-    const nextState: MatchState = {
-      ...withHistory,
-      innings: nextInnings,
-      updatedAt: Date.now(),
-    };
-
-    // commit using your existing safeSet helper (already in this file)
-    safeSet(nextState);
+    safeSet({ ...withHistory, innings: nextInnings, updatedAt: Date.now() });
 
     toast({
       title: "Wicket on extra",
@@ -1544,13 +1528,6 @@ export default function ScoringApp() {
   }
   // 2) Append a normal wicket as a separate delivery (this is the global W button behavior)
   function addWicket() {
-    // inside addWicket()
-    console.log("[DEBUG] addWicket (global) called");
-    console.log(
-      "[DEBUG] last event before append:",
-      (state.innings[state.inningsIndex].allBalls ?? []).slice(-3),
-    );
-    // same guards you already use
     if (
       !isAdmin ||
       !state.setupCompleted ||
@@ -1574,9 +1551,7 @@ export default function ScoringApp() {
     const all = inn.allBalls ?? [];
     const last = all[all.length - 1];
 
-    // Prevent double-wicket on same event
-    // inside addWicket()
-    // Prevent double-wicket only when the last event itself is a wicket event
+    // Prevent duplicate wicket events only if the last event itself is a wicket event
     if (last?.type === "wicket") {
       toast({
         title: "Wicket already recorded",
@@ -1587,15 +1562,15 @@ export default function ScoringApp() {
       return;
     }
 
-    // Append a separate wicket event (counts as a legal delivery)
+    // IMPORTANT: append a wicket with runs: 0. The net penalty is applied via wickets * WICKET_PENALTY.
     addEvent({
       id: uid("ball"),
       ts: Date.now(),
       type: "wicket",
-      runs: -5,
+      runs: 0, // <- do NOT use -5 here
       countsBall: true,
       isWicket: true,
-      note: "Wicket -5",
+      note: "Wicket",
     });
   }
   // --- END addWicket() ---
