@@ -649,7 +649,13 @@ export default function ScoringApp() {
       description: `${state.teams[winner].name} won the toss and chose to ${choice}.`,
     });
   }
-
+  // add inside ScoringApp component, after `const [state, setState] = useState(...)`
+  useEffect(() => {
+    (window as any).__appState = state;
+    return () => {
+      delete (window as any).__appState;
+    };
+  }, [state]);
   const role: Role = useMemo(() => {
     if (roleFromUrl === "viewer") return "viewer";
     if (!keyFromUrl) return "viewer";
