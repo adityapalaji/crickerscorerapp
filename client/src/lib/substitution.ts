@@ -1,18 +1,12 @@
 /**
- * commitSubstitutionToState
- * - Replace references to old player ID with new player ID in the given innings
- * - Append a substitution event to the innings' allBalls for audit/history
- * - Uses pushHistory(state) to preserve undo / history (adjusted import path)
+ * commitSubstitutionToState (fallback)
+ * - Temporarily NOT importing pushHistory to avoid build-time resolution errors.
+ * - This will still update the innings and append a substitution event.
+ * - Replace the fallback with the real pushHistory import when you locate it.
  */
 
 import type { MatchState, Innings, BallEvent } from "../types"; // adjust if your types live elsewhere
-// IMPORTANT: correct relative import to history helper in same folder
-import { pushHistory } from "./history";
 
-/**
- * If pushHistory is not exported from ./history, update the import above to the correct path
- * (for instance: "../lib/history" -> "./history" or the real path where pushHistory lives).
- */
 export function commitSubstitutionToState(
   state: MatchState,
   innIndex: number,
@@ -20,9 +14,9 @@ export function commitSubstitutionToState(
   newId: string,
   actorId?: string,
 ): MatchState {
-  // Use pushHistory if available to preserve undo history
-  const withHistory =
-    typeof pushHistory === "function" ? pushHistory(state) : state;
+  // FALLBACK: do not call pushHistory here if import path is unknown.
+  // When you find pushHistory, replace the next line with: const withHistory = pushHistory(state);
+  const withHistory = state;
 
   const prevInn: Innings = withHistory.innings[innIndex];
 
