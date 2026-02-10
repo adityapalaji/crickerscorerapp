@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { useLocation, useRoute } from "wouter";
 import { motion } from "framer-motion";
+// near other imports
+import ManageRoster from "../components/ui/ManageRoster"; // adjust path if needed
+import * as teamApi from "../api/teams";
+import { commitSubstitutionToState } from "../lib/substitution";
 import {
   ArrowLeft,
   Copy,
@@ -547,6 +551,8 @@ export default function ScoringApp() {
 
   const matchIdFromRoute = params?.matchId;
   const url = useMemo(() => new URL(window.location.href), [location]);
+
+  const [isRosterOpen, setRosterOpen] = useState(false);
 
   const roleFromUrl =
     (getQueryParam(url.search, "mode") as Role | null) ?? "admin";
@@ -2550,6 +2556,20 @@ export default function ScoringApp() {
                 </TabsContent>
 
                 <TabsContent value="players" className="mt-4">
+                  {/* Manage roster button (visible to admins). Inserted above the player selects */}
+                  <div className="flex items-center justify-end mb-3">
+                    {isAdmin && teamObj ? (
+                      <button
+                        type="button"
+                        className="inline-flex items-center px-4 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700"
+                        onClick={() => setRosterOpen(true)}
+                        title="Manage team roster"
+                      >
+                        Manage roster
+                      </button>
+                    ) : null}
+                  </div>
+
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     {/* Striker */}
                     <div className="space-y-2">
@@ -3423,6 +3443,64 @@ export default function ScoringApp() {
           Tip: keep the scorer device in Admin mode; share the Viewer link with
           spectators.
         </footer>
+
+        {teamObj ? (
+          <ManageRoster
+            team={teamObj}
+            open={isRosterOpen}
+            onClose={() => setRosterOpen(false)}
+            onChange={(updatedTeam) => {
+              // Persist updated roster into local state — adapt to your store shape.
+              safeSet({
+                ...state,
+                teams: {
+                  ...state.teams,
+                  [updatedTeam.id]: {
+                    ...(state.teams?.[updatedTeam.id] ?? {}),
+                    name: updatedTeam.name,
+                    roster: updatedTeam.roster,
+                    players: updatedTeam.players,
+                  },
+                },
+              });
+            }}
+            onSubstitute={async (oldId: string, newId: string) => {
+              // Update match state and append substitution audit event
+              const actorId = state.currentUser?.id ?? "admin";
+              const nextState = commitSubstitutionToState(
+                state,
+                state.inningsIndex,
+                oldId,
+                newId,
+                actorId,
+              );
+              safeSet(nextState);
+
+              // Optional: persist substitution to server if you have a match API
+              try {
+                await fetch(`/api/matches/${state.matchId}/substitute`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    from: oldId,
+                    to: newId,
+                    actor: actorId,
+                  }),
+                });
+              } catch (err) {
+                console.error("Server substitution request failed", err);
+              }
+            }}
+            api={{
+              addPlayer: (teamId: string, name: string) =>
+                teamApi.addPlayer(teamId, name),
+              updatePlayer: (teamId: string, playerId: string, payload: any) =>
+                teamApi.updatePlayer(teamId, playerId, payload),
+              deactivatePlayer: (teamId: string, playerId: string) =>
+                teamApi.deactivatePlayer(teamId, playerId),
+            }}
+          />
+        ) : null}
       </div>
     </div>
   );
