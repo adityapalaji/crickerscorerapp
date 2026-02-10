@@ -570,6 +570,25 @@ export default function ScoringApp() {
 
   const wicketLockRef = useRef(false);
 
+  // now derive the currently batting team id and team object AFTER `state` is declared
+  const currentInn = state.innings?.[state.inningsIndex];
+  const currentBattingTeamId =
+    currentInn?.battingTeamId ?? currentInn?.battingTeam ?? currentInn?.batting; // try common keys
+
+  const teamObj = useMemo(() => {
+    if (!currentBattingTeamId) return null;
+    // adjust to your actual team storage — likely under state.teams or state.teamsMap
+    const teamsStore = (state as any).teams ?? (state as any).teamsMap ?? {};
+    const t = teamsStore[currentBattingTeamId];
+    if (!t) return null;
+
+    return {
+      id: t.id ?? currentBattingTeamId,
+      name: t.name ?? t.displayName ?? `Team ${currentBattingTeamId}`,
+      roster: t.roster ?? Object.keys(t.players ?? {}),
+      players: t.players ?? {},
+    };
+  }, [state, currentBattingTeamId]);
   // Toss UI local state (place immediately after your `state` useState)
   const [tossWinnerSel, setTossWinnerSel] = useState<"a" | "b" | "">(
     state.tossWinner ?? "",
