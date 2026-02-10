@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import ManageRoster from "../components/ui/ManageRoster"; // adjust path if needed
 import * as teamApi from "../api/teams";
 import { commitSubstitutionToState } from "../lib/substitution";
+import type { Team } from "../types";
 import {
   ArrowLeft,
   Copy,
@@ -694,37 +695,13 @@ export default function ScoringApp() {
     return inn.bowlerBalls ?? {};
   }, [state.innings, state.inningsIndex]);
 
-  const battingPlayers: string[] = useMemo(() => {
-    if (!currentInnings) return [];
-
-    if (currentInnings.battingTeamId === "a") {
-      return state.teams.a.players ?? [];
-    }
-
-    if (currentInnings.battingTeamId === "b") {
-      return state.teams.b.players ?? [];
-    }
-
-    return [];
-  }, [currentInnings, state.teams.a.players, state.teams.b.players]);
-
-  const bowlingPlayers: string[] = useMemo(() => {
-    if (!currentInnings) return [];
-
-    if (currentInnings.bowlingTeamId === "a") {
-      return state.teams.a.players ?? [];
-    }
-
-    if (currentInnings.bowlingTeamId === "b") {
-      return state.teams.b.players ?? [];
-    }
-
-    return [];
-  }, [currentInnings, state.teams.a.players, state.teams.b.players]);
-
-  const usedBatters = useMemo(() => {
-    return new Set(currentInnings.usedBatters ?? []);
-  }, [currentInnings.usedBatters]);
+  // derive current batting team id (already present earlier as currentBattingTeamId)
+  const currentTeam = state.teams?.[currentBattingTeamId];
+  const battingPlayers: string[] = currentTeam?.roster ?? []; // array of player ids
+  const bowlingPlayers: string[] =
+    state.teams?.[state.innings[state.inningsIndex]?.bowlingTeamId ?? ""]
+      ?.roster ?? []; // adjust if you compute bowlingPlayers differently
+  const usedBatters = new Set<string>(currentInnings.usedBatters ?? []);
 
   const bowlerOvers = currentInnings.bowlerBalls ?? {};
 
@@ -981,13 +958,21 @@ export default function ScoringApp() {
     safeSet(pushHistory({ ...state, title, venue }));
   }
 
-  function setPlayers(striker: string, nonStriker: string, bowler: string) {
+  function setPlayers(
+    strikerId: string | "",
+    nonStrikerId: string | "",
+    bowlerId: string | "",
+  ) {
     const inn = state.innings[state.inningsIndex];
-
-    const updated: Innings = { ...inn, striker, nonStriker, bowler };
+    const updated: Innings = {
+      ...inn,
+      striker: strikerId || undefined,
+      nonStriker: nonStrikerId || undefined,
+      bowler: bowlerId || undefined,
+    };
     const innings = [...state.innings];
     innings[state.inningsIndex] = updated;
-    safeSet(pushHistory({ ...state, innings }));
+    safeSet({ ...state, innings });
   }
 
   function swapBatters() {
@@ -2609,19 +2594,27 @@ export default function ScoringApp() {
                           )
                         }
                       >
+                        {/* Striker */}
                         <option value="">Select striker</option>
-                        {battingPlayers.map((p) => (
-                          <option
-                            key={p}
-                            value={p}
-                            disabled={
-                              p === currentInnings.nonStriker ||
-                              usedBatters.has(p)
-                            }
-                          >
-                            {p} {usedBatters.has(p) ? "(used)" : ""}
-                          </option>
-                        ))}
+                        {battingPlayers.map((playerId) => {
+                          const player =
+                            state.teams?.[currentBattingTeamId ?? ""]
+                              ?.players?.[playerId];
+                          const label = player?.name ?? String(playerId);
+                          return (
+                            <option
+                              key={playerId}
+                              value={playerId}
+                              disabled={
+                                playerId === currentInnings.nonStriker ||
+                                usedBatters.has(playerId)
+                              }
+                            >
+                              {label}{" "}
+                              {usedBatters.has(playerId) ? "(used)" : ""}
+                            </option>
+                          );
+                        })}
                       </select>
                     </div>
 
@@ -2644,18 +2637,27 @@ export default function ScoringApp() {
                           )
                         }
                       >
+                        {/* Non-Striker */}
                         <option value="">Select non-striker</option>
-                        {battingPlayers.map((p) => (
-                          <option
-                            key={p}
-                            value={p}
-                            disabled={
-                              p === currentInnings.striker || usedBatters.has(p)
-                            }
-                          >
-                            {p} {usedBatters.has(p) ? "(used)" : ""}
-                          </option>
-                        ))}
+                        {battingPlayers.map((playerId) => {
+                          const player =
+                            state.teams?.[currentBattingTeamId ?? ""]
+                              ?.players?.[playerId];
+                          const label = player?.name ?? String(playerId);
+                          return (
+                            <option
+                              key={playerId}
+                              value={playerId}
+                              disabled={
+                                playerId === currentInnings.striker ||
+                                usedBatters.has(playerId)
+                              }
+                            >
+                              {label}{" "}
+                              {usedBatters.has(playerId) ? "(used)" : ""}
+                            </option>
+                          );
+                        })}
                       </select>
                     </div>
 
@@ -2741,17 +2743,24 @@ export default function ScoringApp() {
                           safeSet({ ...state, innings });
                         }}
                       >
+                        {/* Bowler */}
                         <option value="">Select bowler</option>
-                        {bowlingPlayers.map((p) => {
-                          const balls = bowlerBalls[p] ?? 0;
+                        {bowlingPlayers.map((playerId) => {
+                          const player =
+                            state.teams?.[
+                              state.innings[state.inningsIndex]
+                                ?.bowlingTeamId ?? ""
+                            ]?.players?.[playerId];
+                          const label = player?.name ?? String(playerId);
+
+                          const balls = bowlerBalls[playerId] ?? 0;
                           const overs = Math.floor(balls / 6);
 
                           const isConsecutive =
                             isAtOverBreak &&
-                            currentInnings.lastOverBowler === p;
+                            currentInnings.lastOverBowler === playerId;
                           const isMaxed = overs >= 2;
 
-                          // New: compute infeasible (disabled because picking them now leaves no valid sequence)
                           const oversLimitVal = clamp(
                             state.oversLimit ?? 16,
                             1,
@@ -2760,7 +2769,7 @@ export default function ScoringApp() {
                           const infeasible = !canCompleteRemainingOvers(
                             currentInnings,
                             bowlingPlayers,
-                            p,
+                            playerId,
                             oversLimitVal,
                           );
 
@@ -2774,20 +2783,20 @@ export default function ScoringApp() {
 
                           return (
                             <option
-                              key={p}
-                              value={p}
+                              key={playerId}
+                              value={playerId}
                               disabled={isMaxed || isConsecutive || infeasible}
                               title={
                                 isMaxed
-                                  ? `${p} – reached 2 overs`
+                                  ? `${label} – reached 2 overs`
                                   : isConsecutive
-                                    ? `${p} – bowled last over`
+                                    ? `${label} – bowled last over`
                                     : infeasible
                                       ? "Picking this bowler would prevent completing the remaining overs"
                                       : ""
                               }
                             >
-                              {p} ({overs}/2){disabledReason}
+                              {label} ({overs}/2){disabledReason}
                             </option>
                           );
                         })}
@@ -3465,49 +3474,70 @@ export default function ScoringApp() {
 
         {teamObj ? (
           <ManageRoster
-            team={teamObj}
+            teams={state.teams ?? {}}
+            initialTeamId={currentBattingTeamId}
             open={isRosterOpen}
             onClose={() => setRosterOpen(false)}
-            onChange={(updatedTeam) => {
-              // Persist updated roster into local state — adapt to your store shape.
+            onChange={(teamId: string, updatedTeam: Team) => {
               safeSet({
                 ...state,
                 teams: {
                   ...state.teams,
-                  [updatedTeam.id]: {
-                    ...(state.teams?.[updatedTeam.id] ?? {}),
-                    name: updatedTeam.name,
-                    roster: updatedTeam.roster,
-                    players: updatedTeam.players,
+                  [teamId]: {
+                    ...(state.teams?.[teamId] ?? {}),
+                    ...updatedTeam,
                   },
                 },
               });
             }}
-            onSubstitute={async (oldId: string, newId: string) => {
-              // Update match state and append substitution audit event
-              const actorId = state.currentUser?.id ?? "admin";
-              const nextState = commitSubstitutionToState(
-                state,
-                state.inningsIndex,
-                oldId,
-                newId,
-                actorId,
-              );
-              safeSet(nextState);
+            onSubstitute={async (
+              teamId: string,
+              oldId: string,
+              newId: string,
+            ) => {
+              // update match state only if the substitution affects current innings' batting team
+              const battingTeamId =
+                state.innings[state.inningsIndex]?.battingTeamId;
+              if (teamId === battingTeamId) {
+                const actorId = state.currentUser?.id ?? "admin";
+                const nextState = commitSubstitutionToState(
+                  state,
+                  state.inningsIndex,
+                  oldId,
+                  newId,
+                  actorId,
+                );
+                safeSet(nextState);
+              } else {
+                // still persist roster change locally for non-active team
+                safeSet({
+                  ...state,
+                  teams: {
+                    ...state.teams,
+                    [teamId]: {
+                      ...(state.teams?.[teamId] ?? {}),
+                      players: state.teams?.[teamId]?.players
+                        ? { ...state.teams![teamId].players }
+                        : {},
+                    },
+                  },
+                });
+              }
 
-              // Optional: persist substitution to server if you have a match API
+              // optional: persist substitution to server
               try {
                 await fetch(`/api/matches/${state.matchId}/substitute`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
+                    teamId,
                     from: oldId,
                     to: newId,
-                    actor: actorId,
+                    actor: state.currentUser?.id ?? "admin",
                   }),
                 });
               } catch (err) {
-                console.error("Server substitution request failed", err);
+                console.error("persist substitution failed", err);
               }
             }}
             api={{
