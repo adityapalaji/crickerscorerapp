@@ -569,7 +569,9 @@ function ScoringApp() {
 
   const roleFromUrl =
     (getQueryParam(url.search, "mode") as Role | null) ?? "admin";
-  const keyFromUrl = getQueryParam(url.search, "key");
+  // Keep the admin key from the URL stable across renders.
+  // (In some cases wouter's location updates can cause search parsing to momentarily drop values.)
+  const [keyFromUrl] = useState<string | null>(() => getQueryParam(url.search, "key"));
   const isExplicitAdminRequest = roleFromUrl === "admin";
 
   const [state, setState] = useState<MatchState>(() => {
