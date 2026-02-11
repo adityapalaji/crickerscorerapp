@@ -1,0 +1,13 @@
+[00:00:03.007] Server  LOG     It looks like you're trying to use TypeScript but do not have the required package(s) installed.
+Installing dependencies
+
+If you are not trying to use TypeScript, please remove the tsconfig.json file from your package root (and any TypeScript files in your app and pages directories).
+
+[00:00:03.089] Server  LOG     
+[00:00:03.090] Server  LOG     Installing devDependencies (npm):
+[00:00:03.090] Server  LOG     - @types/react
+[00:00:03.090] Server  LOG     
+[00:00:05.149] Server  LOG     
+[00:00:05.155] Server  LOG     
+[00:00:05.155] Server  LOG       We detected TypeScript in your project and created a tsconfig.json file for you.
+[00:00:05.395] Server  LOG     ✓ Ready in 5s
