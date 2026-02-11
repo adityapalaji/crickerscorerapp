@@ -55,16 +55,27 @@ export type MatchState = {
   // ... rest of your app state
 };
 
-export async function addPlayer(teamId: string, name: string) {
-  const res = await fetch(`/api/teams/${teamId}/players`, {
+export async function addPlayer(
+  teamId: string,
+  name: string,
+  matchId: string,
+  adminKey?: string,
+) {
+  const resp = await fetch(`/api/teams/${encodeURIComponent(teamId)}/players`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, matchId, adminKey }),
   });
-  if (!res.ok) {
-    throw new Error(await res.text());
+
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    const err = body && body.error ? body.error : `HTTP ${resp.status}`;
+    throw new Error(`Add player failed: ${err}`);
   }
-  return res.json();
+
+  const payload = await resp.json();
+  // returns { player }
+  return payload.player;
 }
 
 export async function updatePlayer(
