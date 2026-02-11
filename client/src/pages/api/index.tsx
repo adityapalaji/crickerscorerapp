@@ -1,6 +1,5 @@
-import React from "react";
-import AppRoot from "../src/App"; // change if your root component file is different
+import type { NextApiRequest, NextApiResponse } from "next";
 
-export default function Home() {
-  return <AppRoot />;
+export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  res.status(200).json({ ok: true });
 }

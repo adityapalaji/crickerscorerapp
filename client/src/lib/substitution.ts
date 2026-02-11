@@ -5,7 +5,7 @@
  * - Replace the fallback with the real pushHistory import when you locate it.
  */
 
-import type { MatchState, Innings, BallEvent } from "../types"; // adjust if your types live elsewhere
+import type { MatchState, Innings, BallEvent } from "../api/teams";
 
 export function commitSubstitutionToState(
   state: MatchState,

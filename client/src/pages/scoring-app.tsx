@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
+import dynamic from "next/dynamic";
 import { useLocation, useRoute } from "wouter";
 import { motion } from "framer-motion";
 // near other imports
@@ -463,12 +464,16 @@ function setQueryParam(search: string, key: string, value: string | null) {
   return next ? `?${next}` : "";
 }
 
+function getOrigin() {
+  return typeof window === "undefined" ? "http://localhost" : window.location.origin;
+}
+
 function buildViewerLink(matchId: string) {
-  return `${window.location.origin}/match/${encodeURIComponent(matchId)}?mode=viewer`;
+  return `${getOrigin()}/match/${encodeURIComponent(matchId)}?mode=viewer`;
 }
 
 function buildAdminLink(matchId: string, adminKey: string) {
-  return `${window.location.origin}/match/${encodeURIComponent(matchId)}?mode=admin&key=${encodeURIComponent(adminKey)}`;
+  return `${getOrigin()}/match/${encodeURIComponent(matchId)}?mode=admin&key=${encodeURIComponent(adminKey)}`;
 }
 
 // Helper: returns true if, after assigning `candidateBowlerId` to the current upcoming over,
@@ -541,17 +546,22 @@ function canCompleteRemainingOvers(
   return true;
 }
 
-export default function ScoringApp() {
+function ScoringApp() {
   console.log("🚀 ScoringApp rendered");
   const { toast } = useToast();
-  const [, params] = useRoute("/match/:matchId");
+  const [, params] = useRoute<{ matchId: string }>("/match/:matchId");
   const [location, setLocation] = useLocation();
   const [activeTab, setActiveTab] = useState<"controls" | "players" | "match">(
     "controls",
   );
 
-  const matchIdFromRoute = params?.matchId;
-  const url = useMemo(() => new URL(window.location.href), [location]);
+  const matchIdFromRoute = params ? params.matchId : null;
+  const url = useMemo(() => {
+    if (typeof window === "undefined") {
+      return new URL(`http://localhost${location ?? ""}`);
+    }
+    return new URL(window.location.href);
+  }, [location]);
 
   const [isRosterOpen, setRosterOpen] = useState(false);
 
@@ -574,7 +584,9 @@ export default function ScoringApp() {
   // now derive the currently batting team id and team object AFTER `state` is declared
   const currentInn = state.innings?.[state.inningsIndex];
   const currentBattingTeamId =
-    currentInn?.battingTeamId ?? currentInn?.battingTeam ?? currentInn?.batting; // try common keys
+    currentInn?.battingTeamId ??
+    (currentInn as any)?.battingTeam ??
+    (currentInn as any)?.batting; // legacy keys
 
   const teamObj = useMemo(() => {
     if (!currentBattingTeamId) return null;
@@ -1003,14 +1015,17 @@ export default function ScoringApp() {
     });
   }
 
-  function setTeams(a: string, b: string) {
+    function setTeams(a: string, b: string) {
     safeSet(
       pushHistory({
         ...state,
-        teams: { a: { id: "a", name: a }, b: { id: "b", name: b } },
+        teams: {
+          a: { id: "a", name: a, players: state.teams.a.players },
+          b: { id: "b", name: b, players: state.teams.b.players },
+        },
       }),
     );
-  }
+    }
 
   function setMeta(title: string, venue: string) {
     safeSet(pushHistory({ ...state, title, venue }));
@@ -1566,7 +1581,7 @@ export default function ScoringApp() {
       return;
     }
 
-    if (last.isWicket || last.type === "wicket") {
+    if (last.isWicket) {
       toast({
         title: "Wicket already present",
         description: "This delivery already has a wicket.",
@@ -1841,7 +1856,7 @@ export default function ScoringApp() {
     return true;
   }
 
-  function setTeamPlayers(teamId: "a" | "b", players: string[]) {
+    function setTeamPlayers(teamId: "a" | "b", players: string[]) {
     safeSet(
       pushHistory({
         ...state,
@@ -1854,7 +1869,25 @@ export default function ScoringApp() {
         },
       }),
     );
-  }
+    }
+
+    const rosterTeams = useMemo(() => {
+    const entries = Object.entries(state.teams ?? {}).map(([teamId, t]) => {
+      const playersMap = Array.isArray(t.players)
+        ? Object.fromEntries(
+            t.players.map((playerId) => [playerId, { id: playerId }]),
+          )
+        : (t.players ?? {});
+
+      const roster = Array.isArray(t.players)
+        ? t.players
+        : Object.keys(playersMap);
+
+      return [teamId, { ...t, players: playersMap, roster }];
+    });
+
+    return Object.fromEntries(entries);
+    }, [state.teams]);
 
   return (
     <div className="app-shell min-h-screen">
@@ -3191,7 +3224,9 @@ export default function ScoringApp() {
                     <div className="text-xs text-muted-foreground">Toss</div>
                     <div className="font-medium">
                       {state.tossWinner
-                        ? `Toss: ${state.teams[state.tossWinner].name} won${state.tossChoice ? ` and chose to ${state.tossChoice}` : ""}`
+                        ? `Toss: ${state.teams[state.tossWinner].name} won${
+                            state.tossChoice ? ` and chose to ${state.tossChoice}` : ""
+                          }`
                         : "Toss: —"}
                     </div>
                   </div>
@@ -3263,7 +3298,9 @@ export default function ScoringApp() {
                         // Toss
                         lines.push(
                           state.tossWinner
-                            ? `Toss: ${state.teams[state.tossWinner].name} won${state.tossChoice ? ` and chose to ${state.tossChoice}` : ""}`
+                            ? `Toss: ${state.teams[state.tossWinner].name} won${
+                                state.tossChoice ? ` and chose to ${state.tossChoice}` : ""
+                              }`
                             : `Toss: —`,
                         );
 
@@ -3569,7 +3606,7 @@ export default function ScoringApp() {
 
         {teamObj ? (
           <ManageRoster
-            teams={state.teams ?? {}}
+            teams={rosterTeams}
             initialTeamId={currentBattingTeamId}
             open={isRosterOpen}
             onClose={() => setRosterOpen(false)}
@@ -3594,22 +3631,11 @@ export default function ScoringApp() {
                 teamApi.addPlayer(teamId, name, state.matchId, keyFromUrl),
               updatePlayer: (teamId: string, playerId: string, payload: any) =>
                 teamApi.updatePlayer
-                  ? teamApi.updatePlayer(
-                      teamId,
-                      playerId,
-                      payload,
-                      state.matchId,
-                      keyFromUrl,
-                    )
+                  ? teamApi.updatePlayer(teamId, playerId, payload)
                   : Promise.reject(new Error("Not implemented")),
               deactivatePlayer: (teamId: string, playerId: string) =>
                 teamApi.deactivatePlayer
-                  ? teamApi.deactivatePlayer(
-                      teamId,
-                      playerId,
-                      state.matchId,
-                      keyFromUrl,
-                    )
+                  ? teamApi.deactivatePlayer(teamId, playerId)
                   : Promise.reject(new Error("Not implemented")),
             }}
           />
@@ -3836,3 +3862,6 @@ function OverLimitControl({
     </Card>
   );
 }
+
+export default dynamic(() => Promise.resolve(ScoringApp), { ssr: false });
+

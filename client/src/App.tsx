@@ -9,8 +9,8 @@ import ScoringApp from "./pages/scoring-app";
 function Router() {
   return (
     <Switch>
-      <Route path="/" component={ScoringApp} />
-      <Route path="/match/:matchId" component={ScoringApp} />
+      <Route path="/">{() => <ScoringApp />}</Route>
+      <Route path="/match/:matchId">{() => <ScoringApp />}</Route>
       <Route component={NotFound} />
     </Switch>
   );

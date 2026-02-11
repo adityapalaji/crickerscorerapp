@@ -52,6 +52,7 @@ export type MatchState = {
   oversLimit?: number;
   setupCompleted?: boolean;
   currentUser?: { id?: string; name?: string } | null;
+  updatedAt?: number;
   // ... rest of your app state
 };
 

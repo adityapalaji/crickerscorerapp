@@ -1,5 +1,5 @@
 /* Optional: import any third-party CSS that must be imported (must come before other rules) */
-@import "tw-animate-css";
+/* @import "tw-animate-css"; */
 
 /* Tailwind directives */
 @tailwind base;
