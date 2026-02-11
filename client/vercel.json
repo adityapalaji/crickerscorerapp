@@ -2,6 +2,6 @@
   "framework": "nextjs",
   "outputDirectory": ".next",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/" }
+    { "source": "/((?!api/|_next/|favicon\.png|opengraph\.jpg).*)", "destination": "/" }
   ]
 }
