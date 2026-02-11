@@ -703,10 +703,62 @@ export default function ScoringApp() {
 
   // derive current batting team id (already present earlier as currentBattingTeamId)
   const currentTeam = state.teams?.[currentBattingTeamId];
-  const battingPlayers: string[] = currentTeam?.roster ?? []; // array of player ids
-  const bowlingPlayers: string[] =
-    state.teams?.[state.innings[state.inningsIndex]?.bowlingTeamId ?? ""]
-      ?.roster ?? []; // adjust if you compute bowlingPlayers differently
+  // resilient battingPlayers
+  const battingPlayers: string[] = useMemo(() => {
+    if (!currentInnings) return [];
+
+    const battingTeamId = currentInnings.battingTeamId;
+    if (!battingTeamId) return [];
+
+    const team = state.teams?.[battingTeamId];
+    if (!team) return [];
+
+    // 1) if roster exists and is an array, use it (ordered)
+    if (Array.isArray(team.roster) && team.roster.length) return team.roster;
+
+    // 2) if players is an array (legacy shape), use it as roster
+    if (Array.isArray(team.players) && team.players.length) return team.players;
+
+    // 3) if players is an object/map, prefer roster if present else keys of map
+    if (
+      team.players &&
+      !Array.isArray(team.players) &&
+      typeof team.players === "object"
+    ) {
+      const playersMap = team.players as Record<string, any>;
+      return team.roster && team.roster.length
+        ? team.roster
+        : Object.keys(playersMap);
+    }
+
+    return [];
+  }, [currentInnings?.battingTeamId, state.teams]);
+
+  // resilient bowlingPlayers
+  const bowlingPlayers: string[] = useMemo(() => {
+    if (!currentInnings) return [];
+
+    const bowlingTeamId = currentInnings.bowlingTeamId;
+    if (!bowlingTeamId) return [];
+
+    const team = state.teams?.[bowlingTeamId];
+    if (!team) return [];
+
+    if (Array.isArray(team.roster) && team.roster.length) return team.roster;
+    if (Array.isArray(team.players) && team.players.length) return team.players;
+    if (
+      team.players &&
+      !Array.isArray(team.players) &&
+      typeof team.players === "object"
+    ) {
+      const playersMap = team.players as Record<string, any>;
+      return team.roster && team.roster.length
+        ? team.roster
+        : Object.keys(playersMap);
+    }
+
+    return [];
+  }, [currentInnings?.bowlingTeamId, state.teams]);
   const usedBatters = new Set<string>(currentInnings.usedBatters ?? []);
 
   const bowlerOvers = currentInnings.bowlerBalls ?? {};
@@ -2601,23 +2653,38 @@ export default function ScoringApp() {
                         }
                       >
                         {/* Striker */}
+                        {/* Striker */}
                         <option value="">Select striker</option>
-                        {battingPlayers.map((playerId) => {
-                          const player =
-                            state.teams?.[currentBattingTeamId ?? ""]
-                              ?.players?.[playerId];
-                          const label = player?.name ?? String(playerId);
+                        {battingPlayers.map((playerKey) => {
+                          const team =
+                            state.teams?.[currentBattingTeamId ?? ""];
+                          let label = String(playerKey);
+
+                          if (team) {
+                            const players = team.players;
+                            if (Array.isArray(players)) {
+                              // players array: label is the array item (likely a name or short id)
+                              label = String(playerKey);
+                            } else if (players && typeof players === "object") {
+                              // players map: show name if present
+                              const p = (players as Record<string, any>)[
+                                playerKey
+                              ];
+                              label = p?.name ?? String(playerKey);
+                            }
+                          }
+
                           return (
                             <option
-                              key={playerId}
-                              value={playerId}
+                              key={playerKey}
+                              value={playerKey}
                               disabled={
-                                playerId === currentInnings.nonStriker ||
-                                usedBatters.has(playerId)
+                                playerKey === currentInnings.nonStriker ||
+                                usedBatters.has(playerKey)
                               }
                             >
                               {label}{" "}
-                              {usedBatters.has(playerId) ? "(used)" : ""}
+                              {usedBatters.has(playerKey) ? "(used)" : ""}
                             </option>
                           );
                         })}
@@ -2644,23 +2711,36 @@ export default function ScoringApp() {
                         }
                       >
                         {/* Non-Striker */}
+                        {/* Non-Striker */}
                         <option value="">Select non-striker</option>
-                        {battingPlayers.map((playerId) => {
-                          const player =
-                            state.teams?.[currentBattingTeamId ?? ""]
-                              ?.players?.[playerId];
-                          const label = player?.name ?? String(playerId);
+                        {battingPlayers.map((playerKey) => {
+                          const team =
+                            state.teams?.[currentBattingTeamId ?? ""];
+                          let label = String(playerKey);
+
+                          if (team) {
+                            const players = team.players;
+                            if (Array.isArray(players)) {
+                              label = String(playerKey);
+                            } else if (players && typeof players === "object") {
+                              const p = (players as Record<string, any>)[
+                                playerKey
+                              ];
+                              label = p?.name ?? String(playerKey);
+                            }
+                          }
+
                           return (
                             <option
-                              key={playerId}
-                              value={playerId}
+                              key={playerKey}
+                              value={playerKey}
                               disabled={
-                                playerId === currentInnings.striker ||
-                                usedBatters.has(playerId)
+                                playerKey === currentInnings.striker ||
+                                usedBatters.has(playerKey)
                               }
                             >
                               {label}{" "}
-                              {usedBatters.has(playerId) ? "(used)" : ""}
+                              {usedBatters.has(playerKey) ? "(used)" : ""}
                             </option>
                           );
                         })}
@@ -2750,21 +2830,30 @@ export default function ScoringApp() {
                         }}
                       >
                         {/* Bowler */}
+                        {/* Bowler */}
                         <option value="">Select bowler</option>
-                        {bowlingPlayers.map((playerId) => {
-                          const player =
-                            state.teams?.[
-                              state.innings[state.inningsIndex]
-                                ?.bowlingTeamId ?? ""
-                            ]?.players?.[playerId];
-                          const label = player?.name ?? String(playerId);
+                        {bowlingPlayers.map((playerKey) => {
+                          const team =
+                            state.teams?.[currentInnings.bowlingTeamId ?? ""];
+                          let label = String(playerKey);
 
-                          const balls = bowlerBalls[playerId] ?? 0;
+                          if (team) {
+                            const players = team.players;
+                            if (Array.isArray(players)) {
+                              label = String(playerKey);
+                            } else if (players && typeof players === "object") {
+                              const p = (players as Record<string, any>)[
+                                playerKey
+                              ];
+                              label = p?.name ?? String(playerKey);
+                            }
+                          }
+
+                          const balls = bowlerBalls[playerKey] ?? 0;
                           const overs = Math.floor(balls / 6);
-
                           const isConsecutive =
                             isAtOverBreak &&
-                            currentInnings.lastOverBowler === playerId;
+                            currentInnings.lastOverBowler === playerKey;
                           const isMaxed = overs >= 2;
 
                           const oversLimitVal = clamp(
@@ -2775,7 +2864,7 @@ export default function ScoringApp() {
                           const infeasible = !canCompleteRemainingOvers(
                             currentInnings,
                             bowlingPlayers,
-                            playerId,
+                            playerKey,
                             oversLimitVal,
                           );
 
@@ -2789,8 +2878,8 @@ export default function ScoringApp() {
 
                           return (
                             <option
-                              key={playerId}
-                              value={playerId}
+                              key={playerKey}
+                              value={playerKey}
                               disabled={isMaxed || isConsecutive || infeasible}
                               title={
                                 isMaxed
