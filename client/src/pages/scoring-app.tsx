@@ -582,9 +582,11 @@ function ScoringApp() {
 
   // Resolve role/isAdmin early so effects can depend on it
   const role: Role = useMemo(() => {
+    // Explicit viewer mode always wins.
     if (roleFromUrl === "viewer") return "viewer";
-    // If user explicitly asked for admin mode but doesn't have a valid key,
-    // keep them in viewer mode, but we can show a clearer message.
+
+    // Admin mode requires a key that matches the match's adminKey.
+    // If there's no key (or mismatch), treat as viewer.
     if (!keyFromUrl) return "viewer";
     return keyFromUrl === state.adminKey ? "admin" : "viewer";
   }, [roleFromUrl, keyFromUrl, state.adminKey]);
@@ -642,9 +644,8 @@ function ScoringApp() {
   useEffect(() => {
     if (!matchIdFromRoute) return;
 
-    // derive admin status from current state + URL key (avoids hoisting issues)
-    const isAdminNow = roleFromUrl !== "viewer" && keyFromUrl === state.adminKey;
-    if (!isAdminNow) return;
+    // Only admins should push changes to cloud.
+    if (!isAdmin) return;
 
     if (!state?.matchId) return;
 
@@ -682,7 +683,7 @@ function ScoringApp() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, matchIdFromRoute, roleFromUrl, keyFromUrl, state.adminKey, cloudSyncStatus]);
+  }, [state, matchIdFromRoute, isAdmin, state.adminKey, cloudSyncStatus]);
 
   // Near-realtime viewer updates: poll cloud state every 2s and apply if newer
   useEffect(() => {
