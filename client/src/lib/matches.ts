@@ -1,14 +1,14 @@
 import type { MatchState } from "../api/teams";
+import { loadMatchState, saveMatchState } from "./matchStore";
 
-// Simple in-memory store for API routes; replace with real persistence if needed.
-const matchStore = new Map<string, MatchState>();
-
-export function loadMatch(matchId: string): MatchState | null {
-  return matchStore.get(matchId) ?? null;
+// Backwards-compatible API used by existing API routes.
+export async function loadMatch(matchId: string): Promise<MatchState | null> {
+  return loadMatchState(matchId);
 }
 
-export function saveMatch(matchId: string, state: MatchState): MatchState {
-  matchStore.set(matchId, state);
-  return state;
+export async function saveMatch(
+  matchId: string,
+  state: MatchState,
+): Promise<MatchState> {
+  return saveMatchState(matchId, state);
 }
-

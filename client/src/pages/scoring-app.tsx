@@ -27,6 +27,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { fetchMatchFromCloud, saveMatchToCloud } from "../lib/cloudSync";
 
 type Role = "admin" | "viewer";
 
@@ -469,6 +470,7 @@ function getOrigin() {
 }
 
 function buildViewerLink(matchId: string) {
+  // use the same route this page is mounted on
   return `${getOrigin()}/match/${encodeURIComponent(matchId)}?mode=viewer`;
 }
 
@@ -577,6 +579,107 @@ function ScoringApp() {
     return seed;
   });
 
+  // Resolve role/isAdmin early so effects can depend on it
+  const role: Role = useMemo(() => {
+    if (roleFromUrl === "viewer") return "viewer";
+    if (!keyFromUrl) return "viewer";
+    return keyFromUrl === state.adminKey ? "admin" : "viewer";
+  }, [roleFromUrl, keyFromUrl, state.adminKey]);
+  const isAdmin = role === "admin";
+
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<
+    "idle" | "loading" | "saving" | "saved" | "error"
+  >(matchIdFromRoute ? "loading" : "idle");
+  const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
+  const lastCloudSavedAtRef = useRef<number>(0);
+  const cloudSaveTimerRef = useRef<any>(null);
+
+  // Load from cloud once when opening a match link (device handoff)
+  useEffect(() => {
+    if (!matchIdFromRoute) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        setCloudSyncStatus("loading");
+        setCloudSyncError(null);
+
+        const cloud = await fetchMatchFromCloud(matchIdFromRoute);
+        if (cancelled) return;
+
+        if (cloud) {
+          // Prefer cloud version for handoff. Also persist locally.
+          setState(cloud as any);
+          try {
+            saveMatch(cloud as any);
+          } catch {
+            // ignore
+          }
+          setCloudSyncStatus("saved");
+          lastCloudSavedAtRef.current = Date.now();
+        } else {
+          // No cloud state yet; keep local seed.
+          setCloudSyncStatus("idle");
+        }
+      } catch (e: any) {
+        if (cancelled) return;
+        setCloudSyncStatus("error");
+        setCloudSyncError(e?.message ?? "Cloud load failed");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchIdFromRoute]);
+
+  // Always-on cloud save for admins (debounced)
+  useEffect(() => {
+    if (!matchIdFromRoute) return;
+
+    // derive admin status from current state + URL key (avoids hoisting issues)
+    const isAdminNow = roleFromUrl !== "viewer" && keyFromUrl === state.adminKey;
+    if (!isAdminNow) return;
+
+    if (!state?.matchId) return;
+
+    // Don’t attempt cloud save before we’ve resolved initial load.
+    if (cloudSyncStatus === "loading") return;
+
+    if (cloudSaveTimerRef.current) {
+      clearTimeout(cloudSaveTimerRef.current);
+    }
+
+    cloudSaveTimerRef.current = setTimeout(async () => {
+      try {
+        setCloudSyncStatus("saving");
+        setCloudSyncError(null);
+
+        const saved = await saveMatchToCloud(
+          matchIdFromRoute,
+          state,
+          state.adminKey,
+        );
+
+        // Keep local state aligned with server-touched fields (updatedAt)
+        setState(saved as any);
+        setCloudSyncStatus("saved");
+        lastCloudSavedAtRef.current = Date.now();
+      } catch (e: any) {
+        setCloudSyncStatus("error");
+        setCloudSyncError(e?.message ?? "Cloud save failed");
+      }
+    }, 1200);
+
+    return () => {
+      if (cloudSaveTimerRef.current) {
+        clearTimeout(cloudSaveTimerRef.current);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, matchIdFromRoute, roleFromUrl, keyFromUrl, state.adminKey, cloudSyncStatus]);
+
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   const wicketLockRef = useRef(false);
@@ -668,13 +771,6 @@ function ScoringApp() {
       delete (window as any).__appState;
     };
   }, [state]);
-  const role: Role = useMemo(() => {
-    if (roleFromUrl === "viewer") return "viewer";
-    if (!keyFromUrl) return "viewer";
-    return keyFromUrl === state.adminKey ? "admin" : "viewer";
-  }, [roleFromUrl, keyFromUrl, state.adminKey]);
-
-  const isAdmin = role === "admin";
 
   const currentInnings = state.innings[state.inningsIndex];
   // DEBUG: log last events and expose current innings to the page console.
