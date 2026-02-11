@@ -5,11 +5,14 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import ScoringApp from "./pages/scoring-app";
+import dynamic from "next/dynamic";
+
+const HomeLanding = dynamic(() => import("./pages/home"), { ssr: false });
 
 function Router() {
   return (
     <Switch>
-      <Route path="/">{() => <ScoringApp />}</Route>
+      <Route path="/">{() => <HomeLanding />}</Route>
       <Route path="/match/:matchId">{() => <ScoringApp />}</Route>
       <Route component={NotFound} />
     </Switch>
