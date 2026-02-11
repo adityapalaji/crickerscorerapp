@@ -1648,7 +1648,7 @@ function ScoringApp() {
         ...prevLastOverSummary.slice(idxInLastOver + 1),
       ];
     } else {
-      // fallback: replace the last item of overEvents (previous behaviour)
+      // fallback: replace the last item of overEvents (previous behavior)
       newOverEvents = [...prevOverEvents.slice(0, -1), mergedEvent];
     }
 
@@ -2249,16 +2249,9 @@ function ScoringApp() {
                       disabled on this device.
                     </p>
 
-                    <Button
-                      variant="default"
-                      className="tap pressable w-full"
-                      onClick={startNewMatch}
-                    >
-                      Start New Match (Admin)
-                    </Button>
-
+                    {/* Viewers should not be able to create matches */}
                     <p className="text-xs text-muted-foreground">
-                      This will create a new match and open it in Admin mode.
+                      To create or edit a match, open an Admin link from the scorer.
                     </p>
                   </div>
                 ) : null}
