@@ -680,6 +680,50 @@ function ScoringApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, matchIdFromRoute, roleFromUrl, keyFromUrl, state.adminKey, cloudSyncStatus]);
 
+  // Near-realtime viewer updates: poll cloud state every 2s and apply if newer
+  useEffect(() => {
+    if (!matchIdFromRoute) return;
+    if (isAdmin) return; // admins are the source of truth; don’t pull while editing
+
+    // Don’t poll while the initial load is in flight
+    if (cloudSyncStatus === "loading") return;
+
+    let cancelled = false;
+    const intervalMs = 2000;
+
+    const tick = async () => {
+      try {
+        const cloud = await fetchMatchFromCloud(matchIdFromRoute);
+        if (cancelled || !cloud) return;
+
+        const cloudUpdatedAt = typeof (cloud as any).updatedAt === "number" ? (cloud as any).updatedAt : 0;
+        const localUpdatedAt = typeof (state as any).updatedAt === "number" ? (state as any).updatedAt : 0;
+
+        // Only apply when cloud is strictly newer
+        if (cloudUpdatedAt > localUpdatedAt) {
+          setState(cloud as any);
+          try {
+            saveMatch(cloud as any);
+          } catch {
+            // ignore
+          }
+        }
+      } catch {
+        // best-effort: ignore polling errors
+      }
+    };
+
+    // run once immediately, then poll
+    tick();
+    const id = setInterval(tick, intervalMs);
+
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchIdFromRoute, isAdmin, cloudSyncStatus, state.updatedAt]);
+
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   const wicketLockRef = useRef(false);
@@ -2063,7 +2107,7 @@ function ScoringApp() {
                       {/* Skin only shown after setup/when live */}
                       {(state.setupCompleted || state.status !== "setup") && (
                         <span className="rounded-md px-2 py-1 text-xs bg-muted/30">
-                          {`Skin ${currentInnings.skinIndex + 1} / ${TOTAL_SKINS}`}
+                          {`Skin ${ currentInnings.skinIndex + 1} / ${TOTAL_SKINS}`}
                         </span>
                       )}
 
