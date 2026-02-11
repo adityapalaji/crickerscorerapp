@@ -570,6 +570,7 @@ function ScoringApp() {
   const roleFromUrl =
     (getQueryParam(url.search, "mode") as Role | null) ?? "admin";
   const keyFromUrl = getQueryParam(url.search, "key");
+  const isExplicitAdminRequest = roleFromUrl === "admin";
 
   const [state, setState] = useState<MatchState>(() => {
     const matchId = matchIdFromRoute ?? "default";
@@ -582,10 +583,13 @@ function ScoringApp() {
   // Resolve role/isAdmin early so effects can depend on it
   const role: Role = useMemo(() => {
     if (roleFromUrl === "viewer") return "viewer";
+    // If user explicitly asked for admin mode but doesn't have a valid key,
+    // keep them in viewer mode, but we can show a clearer message.
     if (!keyFromUrl) return "viewer";
     return keyFromUrl === state.adminKey ? "admin" : "viewer";
   }, [roleFromUrl, keyFromUrl, state.adminKey]);
   const isAdmin = role === "admin";
+  const needsAdminLink = isExplicitAdminRequest && !isAdmin;
 
   const [cloudSyncStatus, setCloudSyncStatus] = useState<
     "idle" | "loading" | "saving" | "saved" | "error"
@@ -1773,7 +1777,7 @@ function ScoringApp() {
         ...prevLastOverSummary.slice(idxInLastOver + 1),
       ];
     } else {
-      // fallback: replace the last item of overEvents (previous behaviour)
+      // fallback: replace the last item of overEvents (previously completed over)
       newOverEvents = [...prevOverEvents.slice(0, -1), mergedEvent];
     }
 
@@ -2244,15 +2248,30 @@ function ScoringApp() {
 
                 {!isAdmin ? (
                   <div className="rounded-xl border bg-card/60 p-3 text-sm space-y-2">
-                    <p>
-                      You’re in <strong>Viewer mode</strong>. Scoring is
-                      disabled on this device.
-                    </p>
-
-                    {/* Viewers should not be able to create matches */}
-                    <p className="text-xs text-muted-foreground">
-                      To create or edit a match, open an Admin link from the scorer.
-                    </p>
+                    {needsAdminLink ? (
+                      <>
+                        <p>
+                          <strong>Admin link required.</strong> This match is in
+                          scorer mode, but this device doesn’t have the admin
+                          key.
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Ask the scorer for an Admin link, or use the Viewer link
+                          to follow along.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p>
+                          You’re in <strong>Viewer mode</strong>. Scoring is
+                          disabled on this device.
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          To create or edit a match, open an Admin link from the
+                          scorer.
+                        </p>
+                      </>
+                    )}
                   </div>
                 ) : null}
               </div>
