@@ -583,17 +583,19 @@ function ScoringApp() {
   });
 
   // Resolve role/isAdmin early so effects can depend on it
+  // IMPORTANT: the URL `key` is the match adminKey. We verify it against the loaded state.
   const role: Role = useMemo(() => {
-    // Explicit viewer mode always wins.
     if (roleFromUrl === "viewer") return "viewer";
-
-    // Admin mode requires a key that matches the match's adminKey.
-    // If there's no key (or mismatch), treat as viewer.
     if (!keyFromUrl) return "viewer";
     return keyFromUrl === state.adminKey ? "admin" : "viewer";
   }, [roleFromUrl, keyFromUrl, state.adminKey]);
   const isAdmin = role === "admin";
   const needsAdminLink = isExplicitAdminRequest && !isAdmin;
+
+  // For cloud operations, use the URL key when present (admin link).
+  // This is the only key the server can validate. Falling back to state.adminKey
+  // supports freshly-created local matches before we navigate.
+  const adminKeyForCloud = keyFromUrl ?? state.adminKey;
 
   const [cloudSyncStatus, setCloudSyncStatus] = useState<
     "idle" | "loading" | "saving" | "saved" | "error"
@@ -663,11 +665,7 @@ function ScoringApp() {
         setCloudSyncStatus("saving");
         setCloudSyncError(null);
 
-        const saved = await saveMatchToCloud(
-          matchIdFromRoute,
-          state,
-          state.adminKey,
-        );
+        const saved = await saveMatchToCloud(matchIdFromRoute, state, adminKeyForCloud);
 
         // Keep local state aligned with server-touched fields (updatedAt)
         setState(saved as any);
@@ -685,7 +683,7 @@ function ScoringApp() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, matchIdFromRoute, isAdmin, state.adminKey, cloudSyncStatus]);
+  }, [state, matchIdFromRoute, isAdmin, adminKeyForCloud, cloudSyncStatus]);
 
   // Near-realtime viewer updates: poll cloud state every 2s and apply if newer
   useEffect(() => {
