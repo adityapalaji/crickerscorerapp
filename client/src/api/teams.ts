@@ -90,9 +90,12 @@ export async function updatePlayer(
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    throw new Error(await res.text());
+    const body = await res.json().catch(() => ({}));
+    const err = body && body.error ? body.error : `HTTP ${res.status}`;
+    throw new Error(`Update player failed: ${err}`);
   }
-  return res.json();
+  const data = await res.json();
+  return data.player ?? data;
 }
 
 export async function deactivatePlayer(teamId: string, playerId: string) {
@@ -102,7 +105,10 @@ export async function deactivatePlayer(teamId: string, playerId: string) {
     body: JSON.stringify({ active: false }),
   });
   if (!res.ok) {
-    throw new Error(await res.text());
+    const body = await res.json().catch(() => ({}));
+    const err = body && body.error ? body.error : `HTTP ${res.status}`;
+    throw new Error(`Deactivate player failed: ${err}`);
   }
-  return res.json();
+  const data = await res.json();
+  return data.player ?? data;
 }
