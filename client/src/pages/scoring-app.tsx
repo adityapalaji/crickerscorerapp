@@ -27,7 +27,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { fetchMatchFromCloud, saveMatchToCloud } from "../lib/cloudSync";
+import { fetchMatchFromCloud, saveMatchToCloud, createMatchInCloud } from "../lib/cloudSync";
 
 type Role = "admin" | "viewer";
 
@@ -569,7 +569,10 @@ function ScoringApp() {
 
   const roleFromUrl =
     (getQueryParam(url.search, "mode") as Role | null) ?? "admin";
-  const keyFromUrl = getQueryParam(url.search, "key");
+  // Keep the admin key from the URL stable across renders.
+  // (In some cases wouter's location updates can cause search parsing to momentarily drop values.)
+  const [keyFromUrl] = useState<string | null>(() => getQueryParam(url.search, "key"));
+  const isExplicitAdminRequest = roleFromUrl === "admin";
 
   const [state, setState] = useState<MatchState>(() => {
     const matchId = matchIdFromRoute ?? "default";
@@ -580,12 +583,19 @@ function ScoringApp() {
   });
 
   // Resolve role/isAdmin early so effects can depend on it
+  // IMPORTANT: the URL `key` is the match adminKey. We verify it against the loaded state.
   const role: Role = useMemo(() => {
     if (roleFromUrl === "viewer") return "viewer";
     if (!keyFromUrl) return "viewer";
     return keyFromUrl === state.adminKey ? "admin" : "viewer";
   }, [roleFromUrl, keyFromUrl, state.adminKey]);
   const isAdmin = role === "admin";
+  const needsAdminLink = isExplicitAdminRequest && !isAdmin;
+
+  // For cloud operations, use the URL key when present (admin link).
+  // This is the only key the server can validate. Falling back to state.adminKey
+  // supports freshly-created local matches before we navigate.
+  const adminKeyForCloud = keyFromUrl ?? state.adminKey;
 
   const [cloudSyncStatus, setCloudSyncStatus] = useState<
     "idle" | "loading" | "saving" | "saved" | "error"
@@ -638,9 +648,8 @@ function ScoringApp() {
   useEffect(() => {
     if (!matchIdFromRoute) return;
 
-    // derive admin status from current state + URL key (avoids hoisting issues)
-    const isAdminNow = roleFromUrl !== "viewer" && keyFromUrl === state.adminKey;
-    if (!isAdminNow) return;
+    // Only admins should push changes to cloud.
+    if (!isAdmin) return;
 
     if (!state?.matchId) return;
 
@@ -656,11 +665,7 @@ function ScoringApp() {
         setCloudSyncStatus("saving");
         setCloudSyncError(null);
 
-        const saved = await saveMatchToCloud(
-          matchIdFromRoute,
-          state,
-          state.adminKey,
-        );
+        const saved = await saveMatchToCloud(matchIdFromRoute, state, adminKeyForCloud);
 
         // Keep local state aligned with server-touched fields (updatedAt)
         setState(saved as any);
@@ -678,7 +683,7 @@ function ScoringApp() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, matchIdFromRoute, roleFromUrl, keyFromUrl, state.adminKey, cloudSyncStatus]);
+  }, [state, matchIdFromRoute, isAdmin, adminKeyForCloud, cloudSyncStatus]);
 
   // Near-realtime viewer updates: poll cloud state every 2s and apply if newer
   useEffect(() => {
@@ -1117,21 +1122,24 @@ function ScoringApp() {
   }
 
   function startNewMatch() {
-    const fresh = defaultMatch(undefined);
-    safeSet(fresh);
-    setLocation(
-      buildAdminLink(fresh.matchId, fresh.adminKey).replace(
-        window.location.origin,
-        "",
-      ),
-      {
-        replace: true,
-      },
-    );
-    toast({
-      title: "New match created",
-      description: "Share the viewer link for spectators.",
-    });
+    (async () => {
+      try {
+        const created = await createMatchInCloud();
+        // Navigate using a relative path so wouter manages it.
+        const nextPath = created.adminUrl.replace(window.location.origin, "");
+        setLocation(nextPath, { replace: true });
+        toast({
+          title: "New match created",
+          description: "Share the viewer link for spectators.",
+        });
+      } catch (e: any) {
+        toast({
+          title: "Couldn’t create match",
+          description: e?.message || "Please try again.",
+          variant: "destructive",
+        } as any);
+      }
+    })();
   }
 
   function undo() {
@@ -1648,7 +1656,7 @@ function ScoringApp() {
         ...prevLastOverSummary.slice(idxInLastOver + 1),
       ];
     } else {
-      // fallback: replace the last item of overEvents (previous behaviour)
+      // fallback: replace the last item of overEvents (previous behavior)
       newOverEvents = [...prevOverEvents.slice(0, -1), mergedEvent];
     }
 
@@ -1773,7 +1781,7 @@ function ScoringApp() {
         ...prevLastOverSummary.slice(idxInLastOver + 1),
       ];
     } else {
-      // fallback: replace the last item of overEvents (previous behaviour)
+      // fallback: replace the last item of overEvents (previously completed over)
       newOverEvents = [...prevOverEvents.slice(0, -1), mergedEvent];
     }
 
@@ -2060,7 +2068,11 @@ function ScoringApp() {
             <Button
               variant="secondary"
               className="tap pressable"
-              onClick={() => (window.location.href = "/")}
+              onClick={() => {
+                // Viewer shouldn't land on an Admin-focused start screen.
+                // Keep them in viewer mode on the home page.
+                window.location.href = isAdmin ? "/" : "/?mode=viewer";
+              }}
               data-testid="button-back-home"
             >
               <ArrowLeft className="h-4 w-4" />
@@ -2244,22 +2256,30 @@ function ScoringApp() {
 
                 {!isAdmin ? (
                   <div className="rounded-xl border bg-card/60 p-3 text-sm space-y-2">
-                    <p>
-                      You’re in <strong>Viewer mode</strong>. Scoring is
-                      disabled on this device.
-                    </p>
-
-                    <Button
-                      variant="default"
-                      className="tap pressable w-full"
-                      onClick={startNewMatch}
-                    >
-                      Start New Match (Admin)
-                    </Button>
-
-                    <p className="text-xs text-muted-foreground">
-                      This will create a new match and open it in Admin mode.
-                    </p>
+                    {needsAdminLink ? (
+                      <>
+                        <p>
+                          <strong>Admin link required.</strong> This match is in
+                          scorer mode, but this device doesn’t have the admin
+                          key.
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Ask the scorer for an Admin link, or use the Viewer link
+                          to follow along.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p>
+                          You’re in <strong>Viewer mode</strong>. Scoring is
+                          disabled on this device.
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          To create or edit a match, open an Admin link from the
+                          scorer.
+                        </p>
+                      </>
+                    )}
                   </div>
                 ) : null}
               </div>
