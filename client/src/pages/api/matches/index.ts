@@ -30,7 +30,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const state = createDefaultMatchState();
   const adminKey = (state as any).adminKey as string;
-  await saveMatch(state.matchId, state);
+  await saveMatch((state as any).matchId, state as any);
 
   const origin = getOrigin(req);
   const adminUrl = buildAdminLink(origin, state.matchId, adminKey);
