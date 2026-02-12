@@ -2068,7 +2068,11 @@ function ScoringApp() {
             <Button
               variant="secondary"
               className="tap pressable"
-              onClick={() => (window.location.href = "/")}
+              onClick={() => {
+                // Viewer shouldn't land on an Admin-focused start screen.
+                // Keep them in viewer mode on the home page.
+                window.location.href = isAdmin ? "/" : "/?mode=viewer";
+              }}
               data-testid="button-back-home"
             >
               <ArrowLeft className="h-4 w-4" />
