@@ -951,7 +951,10 @@ function ScoringApp() {
   }, [isSkinBreak]);
 
   // 🔒 Batter selection allowed only at skin start
-  const isBatterSelectionLocked = currentInnings.ballsInSkin > 0;
+  // Previously this locked striker/non-striker changes for the entire skin.
+  // For injury replacements/substitutions we want admins to be able to change
+  // batter roles mid-skin, so keep this unlocked.
+  const isBatterSelectionLocked = false;
 
   // 🔒 Bowler selection locked during middle of over
   const isBowlerSelectionLocked =
@@ -2063,7 +2066,6 @@ function ScoringApp() {
               Live scoring • touch-first controls • shareable viewer link
             </p>
           </div>
-
           {matchIdFromRoute ? (
             <Button
               variant="secondary"
@@ -2872,8 +2874,7 @@ function ScoringApp() {
                               key={playerKey}
                               value={playerKey}
                               disabled={
-                                playerKey === currentInnings.nonStriker ||
-                                usedBatters.has(playerKey)
+                                playerKey === currentInnings.nonStriker
                               }
                             >
                               {label}{" "}
@@ -2928,8 +2929,7 @@ function ScoringApp() {
                               key={playerKey}
                               value={playerKey}
                               disabled={
-                                playerKey === currentInnings.striker ||
-                                usedBatters.has(playerKey)
+                                playerKey === currentInnings.striker
                               }
                             >
                               {label}{" "}
@@ -3808,7 +3808,48 @@ function ScoringApp() {
               });
             }}
             onSubstitute={async (teamId, oldId, newId) => {
-              // keep as-is / best-effort; substitution logic can be layered later
+              // Update active innings roles if the outgoing player is currently assigned.
+              // NOTE: We do NOT add to usedBatters here because injured batters are allowed to return later.
+              const innIndex = state.inningsIndex;
+              const currentInn = state.innings[innIndex];
+
+              const affectsCurrentInn =
+                currentInn?.striker === oldId ||
+                currentInn?.nonStriker === oldId ||
+                currentInn?.bowler === oldId;
+
+              const withHistory = pushHistory(state);
+              const prevInn = withHistory.innings[innIndex];
+
+              const nextInn: Innings = {
+                ...prevInn,
+                striker: prevInn.striker === oldId ? newId : prevInn.striker,
+                nonStriker:
+                  prevInn.nonStriker === oldId ? newId : prevInn.nonStriker,
+                bowler: prevInn.bowler === oldId ? newId : prevInn.bowler,
+                allBalls: [
+                  ...(prevInn.allBalls ?? []),
+                  {
+                    id: uid("sub"),
+                    ts: Date.now(),
+                    type: "substitution" as any,
+                    runs: 0,
+                    countsBall: false,
+                    note: `Substitution ${oldId} → ${newId}`,
+                  } as any,
+                ],
+              };
+
+              const innings = [...withHistory.innings];
+              innings[innIndex] = nextInn;
+              safeSet({ ...withHistory, innings });
+
+              toast({
+                title: "Substitution recorded",
+                description: affectsCurrentInn
+                  ? "Replaced the player in the current innings."
+                  : "Player added as a substitution (not currently on field).",
+              });
             }}
             api={{
               addPlayer: (teamId: string, name: string) =>

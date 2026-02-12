@@ -41,9 +41,25 @@ export default function ManageRoster({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Substitution UI state (replaces prompt-based flow)
+  const [subbingOldId, setSubbingOldId] = useState<string | null>(null);
+  const [subMode, setSubMode] = useState<"existing" | "new">("existing");
+  const [selectedReplacementId, setSelectedReplacementId] = useState<string>("");
+  const [newReplacementName, setNewReplacementName] = useState<string>("");
+  const [subError, setSubError] = useState<string | null>(null);
+
   useEffect(() => {
     if (initialTeamId) setSelectedTeamId(initialTeamId);
   }, [initialTeamId]);
+
+  // Reset substitution panel when team changes or modal closes
+  useEffect(() => {
+    setSubbingOldId(null);
+    setSelectedReplacementId("");
+    setNewReplacementName("");
+    setSubError(null);
+    setSubMode("existing");
+  }, [selectedTeamId, open]);
 
   const playersArray = useMemo(() => {
     if (!team) return [];
@@ -51,6 +67,18 @@ export default function ManageRoster({
       (id) => team.players?.[id] ?? { id, name: id, active: true },
     );
   }, [team]);
+
+  const activePlayersArray = useMemo(() => {
+    if (!team) return [] as Player[];
+    return (team.roster ?? [])
+      .map((id) => team.players?.[id] ?? ({ id, name: id, active: true } as any))
+      .filter((p: any) => p?.active !== false);
+  }, [team]);
+
+  const replacementCandidates = useMemo(() => {
+    if (!subbingOldId) return activePlayersArray;
+    return activePlayersArray.filter((p) => p.id !== subbingOldId);
+  }, [activePlayersArray, subbingOldId]);
 
   if (!open) return null;
 
@@ -115,49 +143,116 @@ export default function ManageRoster({
 
   async function handleSubstitute(oldId: string) {
     if (!selectedTeamId) return;
-    const name = prompt(
-      "Enter replacement player's name (or leave empty to pick existing):",
-    );
-    if (name === null) return;
+    if (!onSubstitute) {
+      alert("Substitution is not available in this context.");
+      return;
+    }
+
+    // Toggle panel
+    if (subbingOldId === oldId) {
+      setSubbingOldId(null);
+      setSelectedReplacementId("");
+      setNewReplacementName("");
+      setSubError(null);
+      return;
+    }
+
+    setSubbingOldId(oldId);
+    setSelectedReplacementId("");
+    setNewReplacementName("");
+    setSubError(null);
+
+    // If there are no candidates, default to adding new
+    const hasCandidates = replacementCandidates.length > 0;
+    setSubMode(hasCandidates ? "existing" : "new");
+
+    // Try to keep the expanded row in view
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`player-row-${oldId}`);
+      el?.scrollIntoView?.({ block: "nearest" });
+    });
+  }
+
+  async function submitExistingSubstitution(oldId: string) {
+    if (!selectedTeamId || !team) return;
+    if (!onSubstitute) return;
+
+    const newId = selectedReplacementId;
+    if (!newId) {
+      setSubError("Select a replacement player.");
+      return;
+    }
+    if (newId === oldId) {
+      setSubError("Replacement can’t be the same player.");
+      return;
+    }
+
     setLoading(true);
+    setSubError(null);
     try {
-      let replacementId: string | null = null;
-      if (name.trim()) {
-        const p = await api.addPlayer(selectedTeamId, name.trim());
-        replacementId = p.id;
-      } else {
-        const existing = prompt(
-          "Enter existing player ID to substitute in (copy from roster list):",
-        );
-        if (!existing) {
-          alert("No replacement provided");
-          return;
-        }
-        replacementId = existing;
-      }
-      if (!replacementId) throw new Error("No replacement chosen");
-      if (onSubstitute)
-        await onSubstitute(selectedTeamId, oldId, replacementId);
+      await onSubstitute(selectedTeamId, oldId, newId);
+
+      // Ensure replacement is present in roster/players (usually already)
+      const nextRoster = team.roster?.includes(newId)
+        ? team.roster
+        : [...(team.roster ?? []), newId];
+
       const nextPlayers = {
-        ...(team!.players ?? {}),
-        [replacementId]: (team!.players ?? {})[replacementId] ?? {
-          id: replacementId,
-          name: name.trim() || replacementId,
+        ...(team.players ?? {}),
+        [newId]: (team.players ?? {})[newId] ?? {
+          id: newId,
+          name: newId,
           active: true,
           createdAt: Date.now(),
         },
       };
-      const nextRoster = team!.roster?.includes(replacementId)
-        ? team!.roster
-        : [...(team!.roster ?? []), replacementId];
-      onChange?.(selectedTeamId, {
-        ...team!,
-        players: nextPlayers,
-        roster: nextRoster,
-      });
+
+      onChange?.(selectedTeamId, { ...team, roster: nextRoster, players: nextPlayers });
+
+      setSubbingOldId(null);
+      setSelectedReplacementId("");
     } catch (err) {
       console.error("substitute failed", err);
-      alert("Substitution failed");
+      setSubError("Substitution failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function submitNewPlayerSubstitution(oldId: string) {
+    if (!selectedTeamId || !team) return;
+    if (!onSubstitute) return;
+
+    const name = newReplacementName.trim();
+    if (!name) {
+      setSubError("Enter a name for the new replacement player.");
+      return;
+    }
+
+    setLoading(true);
+    setSubError(null);
+    try {
+      // Create the player first
+      const p = await api.addPlayer(selectedTeamId, name);
+      const newId = p.id;
+
+      await onSubstitute(selectedTeamId, oldId, newId);
+
+      const nextPlayers = {
+        ...(team.players ?? {}),
+        [p.id]: p,
+      };
+      const nextRoster = team.roster?.includes(p.id)
+        ? team.roster
+        : [...(team.roster ?? []), p.id];
+
+      onChange?.(selectedTeamId, { ...team, players: nextPlayers, roster: nextRoster });
+
+      setSubbingOldId(null);
+      setNewReplacementName("");
+    } catch (err) {
+      console.error("substitute failed", err);
+      setSubError("Substitution failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -196,6 +291,7 @@ export default function ManageRoster({
             {playersArray.map((p) => (
               <li
                 key={p.id}
+                id={`player-row-${p.id}`}
                 style={{
                   padding: 12,
                   borderBottom: "1px solid #eee",
@@ -203,6 +299,7 @@ export default function ManageRoster({
                   justifyContent: "space-between",
                   alignItems: "center",
                   gap: 12,
+                  flexWrap: "wrap",
                 }}
               >
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -273,7 +370,8 @@ export default function ManageRoster({
                         </button>
                         <button
                           onClick={() => handleSubstitute(p.id)}
-                          disabled={loading}
+                          disabled={loading || !onSubstitute}
+                          title={!onSubstitute ? "Substitution not available" : undefined}
                         >
                           Substitute
                         </button>
@@ -284,9 +382,177 @@ export default function ManageRoster({
                           Deactivate
                         </button>
                       </div>
+
+                      {subbingOldId === p.id ? (
+                        <div
+                          style={{
+                            marginTop: 10,
+                            border: "1px solid #eee",
+                            borderRadius: 8,
+                            padding: 10,
+                            background: "#fafafa",
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              gap: 8,
+                              flexWrap: "wrap",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                            }}
+                          >
+                            <div style={{ fontSize: 13, fontWeight: 600 }}>
+                              Substitute for: {p.name || p.id}
+                            </div>
+                            <button
+                              onClick={() => {
+                                setSubbingOldId(null);
+                                setSelectedReplacementId("");
+                                setNewReplacementName("");
+                                setSubError(null);
+                              }}
+                              disabled={loading}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop: 8,
+                              display: "flex",
+                              gap: 8,
+                              flexWrap: "wrap",
+                            }}
+                          >
+                            <button
+                              onClick={() => setSubMode("existing")}
+                              disabled={loading}
+                              style={{
+                                padding: "6px 10px",
+                                borderRadius: 999,
+                                border: "1px solid #ddd",
+                                background:
+                                  subMode === "existing" ? "#e8f0ff" : "white",
+                              }}
+                            >
+                              Pick from roster
+                            </button>
+                            <button
+                              onClick={() => setSubMode("new")}
+                              disabled={loading}
+                              style={{
+                                padding: "6px 10px",
+                                borderRadius: 999,
+                                border: "1px solid #ddd",
+                                background:
+                                  subMode === "new" ? "#e8f0ff" : "white",
+                              }}
+                            >
+                              Add new
+                            </button>
+                          </div>
+
+                          {subMode === "existing" ? (
+                            <div style={{ marginTop: 10 }}>
+                              <div
+                                style={{
+                                  display: "flex",
+                                  gap: 8,
+                                  flexWrap: "wrap",
+                                  alignItems: "center",
+                                }}
+                              >
+                                <select
+                                  value={selectedReplacementId}
+                                  onChange={(e) =>
+                                    setSelectedReplacementId(e.target.value)
+                                  }
+                                  disabled={loading}
+                                  style={{ padding: "6px 8px", borderRadius: 6 }}
+                                >
+                                  <option value="">
+                                    {replacementCandidates.length
+                                      ? "Select replacement"
+                                      : "No active players available"}
+                                  </option>
+                                  {replacementCandidates.map((rp) => (
+                                    <option key={rp.id} value={rp.id}>
+                                      {(rp.name || rp.id) + ` (${rp.id})`}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  onClick={() => submitExistingSubstitution(p.id)}
+                                  disabled={
+                                    loading ||
+                                    !replacementCandidates.length ||
+                                    !selectedReplacementId
+                                  }
+                                >
+                                  Confirm
+                                </button>
+                              </div>
+
+                              {!replacementCandidates.length ? (
+                                <div
+                                  style={{
+                                    marginTop: 8,
+                                    fontSize: 12,
+                                    color: "#666",
+                                  }}
+                                >
+                                  No active roster players to substitute in. Use “Add new”.
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <div style={{ marginTop: 10 }}>
+                              <div
+                                style={{
+                                  display: "flex",
+                                  gap: 8,
+                                  flexWrap: "wrap",
+                                  alignItems: "center",
+                                }}
+                              >
+                                <input
+                                  placeholder="New replacement name"
+                                  value={newReplacementName}
+                                  onChange={(e) =>
+                                    setNewReplacementName(e.target.value)
+                                  }
+                                  disabled={loading}
+                                  style={{ flex: "1 1 220px" }}
+                                />
+                                <button
+                                  onClick={() => submitNewPlayerSubstitution(p.id)}
+                                  disabled={loading || !newReplacementName.trim()}
+                                >
+                                  Add & substitute
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {subError ? (
+                            <div
+                              style={{
+                                marginTop: 8,
+                                fontSize: 12,
+                                color: "#b91c1c",
+                              }}
+                            >
+                              {subError}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </>
                   )}
                 </div>
+
                 <div
                   className="meta"
                   style={{
@@ -333,6 +599,23 @@ export default function ManageRoster({
           background: white;
           border-radius: 8px;
           padding: 16px;
+          max-height: calc(100vh - 32px);
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
+        }
+        .modal-header {
+          position: sticky;
+          top: 0;
+          background: white;
+          z-index: 1;
+          padding-bottom: 12px;
+          margin-bottom: 8px;
+          border-bottom: 1px solid #eee;
+        }
+        .modal-body {
+          overflow: auto;
+          padding-right: 4px;
         }
       `}</style>
     </div>
