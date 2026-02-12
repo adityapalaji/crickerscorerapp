@@ -3771,22 +3771,31 @@ function ScoringApp() {
             open={isRosterOpen}
             onClose={() => setRosterOpen(false)}
             onChange={(teamId, updatedTeam) => {
+              // Convert ManageRoster's {players: Record<id, Player>, roster: string[]}
+              // back into scoring-app's internal team shape { players: string[] }.
+              const nextPlayerIds =
+                Array.isArray((updatedTeam as any).roster) &&
+                (updatedTeam as any).roster.length
+                  ? ((updatedTeam as any).roster as string[])
+                  : Object.keys(((updatedTeam as any).players ?? {}) as Record<string, any>);
+
               safeSet({
                 ...state,
                 teams: {
                   ...state.teams,
                   [teamId]: {
                     ...(state.teams?.[teamId] ?? {}),
-                    ...updatedTeam,
+                    id: (updatedTeam as any).id ?? (state.teams?.[teamId] as any)?.id ?? teamId,
+                    name: (updatedTeam as any).name ?? (state.teams?.[teamId] as any)?.name,
+                    players: nextPlayerIds,
                   },
                 },
               });
             }}
             onSubstitute={async (teamId, oldId, newId) => {
-              // existing substitution logic...
+              // keep as-is / best-effort; substitution logic can be layered later
             }}
             api={{
-              // bind matchId + adminKey here so ManageRoster can call api.addPlayer(teamId, name)
               addPlayer: (teamId: string, name: string) =>
                 teamApi.addPlayer(teamId, name, state.matchId, keyFromUrl),
               updatePlayer: (teamId: string, playerId: string, payload: any) =>
