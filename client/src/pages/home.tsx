@@ -1,32 +1,20 @@
-import React, { useMemo } from "react";
+import React, { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
-function uid(prefix = "id") {
-  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
-}
-
-function getOrigin() {
-  return typeof window === "undefined" ? "http://localhost" : window.location.origin;
-}
-
-function buildAdminLink(matchId: string, adminKey: string) {
-  return `${getOrigin()}/match/${encodeURIComponent(matchId)}?mode=admin&key=${encodeURIComponent(adminKey)}`;
-}
-
 export default function HomeLanding() {
-  const next = useMemo(() => {
-    const matchId = uid("match");
-    const adminKey = uid("admin");
-    return { matchId, adminKey };
-  }, []);
+  const [isCreating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   return (
     <div className="min-h-screen bg-background">
       <div className="mx-auto w-full max-w-3xl px-4 py-10">
-        <h1 className="font-display text-3xl tracking-tight">Indoor Cricket Scorer</h1>
+        <h1 className="font-display text-3xl tracking-tight">
+          Indoor Cricket Scorer
+        </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Start a new match as the scorer (Admin), then share the Viewer link with spectators.
+          Start a new match as the scorer (Admin), then share the Viewer link with
+          spectators.
         </p>
 
         <Card className="mt-6 p-6 space-y-3">
@@ -39,17 +27,37 @@ export default function HomeLanding() {
 
           <Button
             className="w-full"
-            onClick={() => {
+            onClick={async () => {
               if (typeof window === "undefined") return;
-              // Go directly to an admin link (includes key). Match state will be created locally and
-              // cloud-saved once you start scoring.
-              const adminUrl = buildAdminLink(next.matchId, next.adminKey);
-              window.location.assign(adminUrl);
+              if (isCreating) return;
+
+              setError(null);
+              setCreating(true);
+              try {
+                const res = await fetch("/api/matches", { method: "POST" });
+                if (!res.ok) {
+                  const body = await res.json().catch(() => ({}));
+                  throw new Error(body?.error || `HTTP ${res.status}`);
+                }
+                const data = (await res.json()) as { adminUrl?: string };
+                if (!data?.adminUrl) throw new Error("Missing adminUrl");
+                window.location.assign(data.adminUrl);
+              } catch (e: any) {
+                setError(e?.message || "Failed to create match");
+                setCreating(false);
+              }
             }}
+            disabled={isCreating}
             data-testid="button-start-new-match"
           >
-            Start New Match (Admin)
+            {isCreating ? "Creating match…" : "Start New Match (Admin)"}
           </Button>
+
+          {error ? (
+            <p className="text-xs text-destructive" data-testid="text-create-error">
+              {error}
+            </p>
+          ) : null}
         </Card>
 
         <Card className="mt-4 p-6 space-y-2">

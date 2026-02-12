@@ -27,7 +27,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { fetchMatchFromCloud, saveMatchToCloud } from "../lib/cloudSync";
+import { fetchMatchFromCloud, saveMatchToCloud, createMatchInCloud } from "../lib/cloudSync";
 
 type Role = "admin" | "viewer";
 
@@ -1122,21 +1122,24 @@ function ScoringApp() {
   }
 
   function startNewMatch() {
-    const fresh = defaultMatch(undefined);
-    safeSet(fresh);
-    setLocation(
-      buildAdminLink(fresh.matchId, fresh.adminKey).replace(
-        window.location.origin,
-        "",
-      ),
-      {
-        replace: true,
-      },
-    );
-    toast({
-      title: "New match created",
-      description: "Share the viewer link for spectators.",
-    });
+    (async () => {
+      try {
+        const created = await createMatchInCloud();
+        // Navigate using a relative path so wouter manages it.
+        const nextPath = created.adminUrl.replace(window.location.origin, "");
+        setLocation(nextPath, { replace: true });
+        toast({
+          title: "New match created",
+          description: "Share the viewer link for spectators.",
+        });
+      } catch (e: any) {
+        toast({
+          title: "Couldn’t create match",
+          description: e?.message || "Please try again.",
+          variant: "destructive",
+        } as any);
+      }
+    })();
   }
 
   function undo() {

@@ -4,6 +4,20 @@ export type CloudSyncStatus =
   | { phase: "saved"; at: number }
   | { phase: "error"; message: string };
 
+export async function createMatchInCloud() {
+  const res = await fetch(`/api/matches`, { method: "POST" });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body?.error || `HTTP ${res.status}`);
+  }
+  return (await res.json()) as {
+    matchId: string;
+    adminKey: string;
+    adminUrl: string;
+    viewerUrl: string;
+  };
+}
+
 export async function fetchMatchFromCloud(matchId: string) {
   const res = await fetch(`/api/matches/${encodeURIComponent(matchId)}`);
   if (res.status === 404) return null;
@@ -28,4 +42,3 @@ export async function saveMatchToCloud(matchId: string, state: any, adminKey: st
   const data = await res.json();
   return data?.state ?? state;
 }
-
