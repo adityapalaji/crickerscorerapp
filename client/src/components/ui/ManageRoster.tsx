@@ -202,12 +202,24 @@ export default function ManageRoster({
                   display: "flex",
                   justifyContent: "space-between",
                   alignItems: "center",
+                  gap: 12,
                 }}
               >
-                <div>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   {editingId === p.id ? (
-                    <>
-                      <input defaultValue={p.name} id={`edit-${p.id}`} />
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        flexWrap: "wrap",
+                        alignItems: "center",
+                      }}
+                    >
+                      <input
+                        defaultValue={p.name}
+                        id={`edit-${p.id}`}
+                        style={{ flex: "1 1 220px" }}
+                      />
                       <button
                         onClick={() => {
                           const el = document.getElementById(
@@ -215,30 +227,74 @@ export default function ManageRoster({
                           ) as HTMLInputElement;
                           handleSaveEdit(p.id, el?.value ?? p.name);
                         }}
+                        disabled={loading}
                       >
                         Save
                       </button>
-                      <button onClick={() => setEditingId(null)}>Cancel</button>
-                    </>
+                      <button
+                        onClick={() => setEditingId(null)}
+                        disabled={loading}
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   ) : (
                     <>
-                      <strong>{p.name}</strong>
-                      <span style={{ marginLeft: 8 }}>
-                        {p.active === false ? " (inactive)" : ""}
-                      </span>
-                      <div style={{ display: "inline-block", marginLeft: 12 }}>
-                        <button onClick={() => setEditingId(p.id)}>Edit</button>
-                        <button onClick={() => handleSubstitute(p.id)}>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "baseline",
+                          gap: 8,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <strong style={{ fontSize: 14 }}>
+                          {p.name || p.id}
+                        </strong>
+                        {p.active === false ? (
+                          <span style={{ color: "#666", fontSize: 12 }}>
+                            (inactive)
+                          </span>
+                        ) : null}
+                      </div>
+                      <div
+                        style={{
+                          marginTop: 6,
+                          display: "flex",
+                          gap: 8,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <button
+                          onClick={() => setEditingId(p.id)}
+                          disabled={loading}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleSubstitute(p.id)}
+                          disabled={loading}
+                        >
                           Substitute
                         </button>
-                        <button onClick={() => handleDeactivate(p.id)}>
+                        <button
+                          onClick={() => handleDeactivate(p.id)}
+                          disabled={loading}
+                        >
                           Deactivate
                         </button>
                       </div>
                     </>
                   )}
                 </div>
-                <div className="meta" style={{ color: "#666" }}>
+                <div
+                  className="meta"
+                  style={{
+                    color: "#666",
+                    fontSize: 12,
+                    whiteSpace: "nowrap",
+                  }}
+                >
                   id: {p.id}
                 </div>
               </li>

@@ -3773,11 +3773,21 @@ function ScoringApp() {
             onChange={(teamId, updatedTeam) => {
               // Convert ManageRoster's {players: Record<id, Player>, roster: string[]}
               // back into scoring-app's internal team shape { players: string[] }.
-              const nextPlayerIds =
+              const rosterIds =
                 Array.isArray((updatedTeam as any).roster) &&
                 (updatedTeam as any).roster.length
                   ? ((updatedTeam as any).roster as string[])
-                  : Object.keys(((updatedTeam as any).players ?? {}) as Record<string, any>);
+                  : Object.keys(
+                      (((updatedTeam as any).players ?? {}) as Record<string, any>)
+                    );
+
+              // Store *names* in scoring-app teams.players so the dropdowns show names
+              // (scoring-app currently treats teams.players as a string[] roster).
+              const playersMap =
+                (((updatedTeam as any).players ?? {}) as Record<string, any>) || {};
+              const nextPlayerNames = rosterIds.map(
+                (id) => playersMap?.[id]?.name ?? id,
+              );
 
               safeSet({
                 ...state,
@@ -3785,9 +3795,14 @@ function ScoringApp() {
                   ...state.teams,
                   [teamId]: {
                     ...(state.teams?.[teamId] ?? {}),
-                    id: (updatedTeam as any).id ?? (state.teams?.[teamId] as any)?.id ?? teamId,
-                    name: (updatedTeam as any).name ?? (state.teams?.[teamId] as any)?.name,
-                    players: nextPlayerIds,
+                    id:
+                      (updatedTeam as any).id ??
+                      (state.teams?.[teamId] as any)?.id ??
+                      teamId,
+                    name:
+                      (updatedTeam as any).name ??
+                      (state.teams?.[teamId] as any)?.name,
+                    players: nextPlayerNames,
                   },
                 },
               });
