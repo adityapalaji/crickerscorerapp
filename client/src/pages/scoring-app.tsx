@@ -6,7 +6,6 @@ import { motion } from "framer-motion";
 import ManageRoster from "../components/ui/ManageRoster"; // adjust path if needed
 import * as teamApi from "../api/teams";
 import { commitSubstitutionToState } from "../lib/substitution";
-import type { Team } from "../types";
 import {
   ArrowLeft,
   Copy,
@@ -14,8 +13,6 @@ import {
   Eye,
   RotateCcw,
   Share2,
-  Shield,
-  Trophy,
   Undo2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -30,6 +27,9 @@ import { cn } from "@/lib/utils";
 import { fetchMatchFromCloud, saveMatchToCloud, createMatchInCloud } from "../lib/cloudSync";
 
 type Role = "admin" | "viewer";
+
+// NEW: scoreboard display options (rendering only)
+type ScoreboardDisplayType = "skins" | "traditional";
 
 type BallEventType =
   | "dot"
@@ -100,14 +100,6 @@ type Innings = {
   usedBatters: string[];
 };
 
-type SkinResult = {
-  skin: number;
-  teamId: "a" | "b";
-  grossRuns: number;
-  wickets: number;
-  netRuns: number;
-};
-
 type MatchState = {
   version: number;
   matchId: string;
@@ -134,12 +126,14 @@ type MatchState = {
   tossWinner?: "a" | "b" | null;
   tossChoice?: "bat" | "bowl" | null;
 
+  // NEW: scoreboard display setting (persisted per match)
+  scoreboardDisplay?: ScoreboardDisplayType;
+
   adminKey: string; // used only to gate UI locally + share link
   history: { snapshots: MatchState[] };
 };
 
 const STORAGE_PREFIX = "ic_scoring_match_v1:";
-const MAX_BOWLER_BALLS = 12;
 const TOTAL_SKINS = 4;
 
 const WICKET_PENALTY = 5;
@@ -168,38 +162,13 @@ function formatOvers(balls: number, oversLimit = 16) {
   return `${o}.${b}`;
 }
 
-function computeSkinNet(
-  innings: Innings | undefined,
-  skinIndex: number,
-): number | null {
-  if (!innings) return null;
-
-  const SKIN_BALLS = 24;
-  const start = skinIndex * SKIN_BALLS;
-  const end = start + SKIN_BALLS;
-
-  // Build a FULL chronological ball list
-  const allBalls: BallEvent[] = [
-    ...innings.lastOverSummary,
-    ...innings.overEvents,
-  ];
-
-  let net = 0;
-
-  allBalls.slice(start, end).forEach((ev) => {
-    net += ev.runs;
-  });
-
-  return net;
-}
-
-function getEventRuns(ev: any): number {
-  return typeof ev.runs === "number" ? ev.runs : -5;
-}
-
-function totalExtras(extras: Innings["extras"]) {
-  return extras.wide + extras.noball + extras.bye + extras.legbye;
-}
+type SkinResult = {
+  skin: number;
+  teamId: "a" | "b";
+  grossRuns: number;
+  wickets: number;
+  netRuns: number;
+};
 
 function getLocalKey(matchId: string) {
   return `${STORAGE_PREFIX}${matchId}`;
@@ -219,6 +188,10 @@ function loadMatch(matchId: string): MatchState | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as MatchState;
     if (!parsed || parsed.version !== 1) return null;
+
+    // Backward-compatible defaulting.
+    if (!parsed.scoreboardDisplay) parsed.scoreboardDisplay = "skins";
+
     return parsed;
   } catch {
     return null;
@@ -284,6 +257,9 @@ function defaultMatch(matchId?: string): MatchState {
 
     status: "setup",
     setupCompleted: false,
+
+    // NEW: default scoreboard display (matches current UI)
+    scoreboardDisplay: "skins",
 
     adminKey,
     history: { snapshots: [] },
@@ -446,6 +422,25 @@ function pillTone(ev: BallEvent) {
   if (ev.type === "dot") return "bg-secondary text-secondary-foreground";
   if (ev.runs >= 4) return "bg-primary text-primary-foreground";
   return "bg-card text-foreground border";
+}
+
+// Helper: format extras summary string
+function totalExtras(extras: {
+  wide: number;
+  noball: number;
+  bye: number;
+  legbye: number;
+}) {
+  const w = extras?.wide ?? 0;
+  const nb = extras?.noball ?? 0;
+  const b = extras?.bye ?? 0;
+  const lb = extras?.legbye ?? 0;
+  const parts: string[] = [];
+  if (w) parts.push(`Wd ${w}`);
+  if (nb) parts.push(`Nb ${nb}`);
+  if (b) parts.push(`B ${b}`);
+  if (lb) parts.push(`Lb ${lb}`);
+  return parts.length ? parts.join(", ") : "0";
 }
 
 function getQueryParam(search: string, key: string) {
@@ -918,8 +913,6 @@ function ScoringApp() {
   }, [currentInnings?.bowlingTeamId, state.teams]);
   const usedBatters = new Set<string>(currentInnings.usedBatters ?? []);
 
-  const bowlerOvers = currentInnings.bowlerBalls ?? {};
-
   const isSkinLocked = currentInnings.ballsInSkin > 0;
   const isMatchCompleted = state.status === "completed";
 
@@ -1062,6 +1055,13 @@ function ScoringApp() {
 
   function safeSet(next: MatchState) {
     setState({ ...next, updatedAt: Date.now() });
+  }
+
+  // NEW: scoreboard display (persisted on match state; locked after setup confirmation)
+  const scoreboardDisplay: ScoreboardDisplayType = state.scoreboardDisplay ?? "skins";
+  function setScoreboardDisplay(next: ScoreboardDisplayType) {
+    if (state.setupCompleted) return;
+    safeSet(pushHistory({ ...state, scoreboardDisplay: next }));
   }
 
   function startMatch() {
@@ -1920,7 +1920,9 @@ function ScoringApp() {
   const totalScore = `${inningsNet}/${currentInnings.wickets}`;
 
   const oversText = `${formatOvers(currentInnings.balls, state.oversLimit)} ov`;
-  const extrasText = totalExtras(currentInnings.extras);
+  const extrasText = totalExtras(
+    (currentInnings as any).extras ?? { wide: 0, noball: 0, bye: 0, legbye: 0 },
+  );
 
   const isOverLimitReached =
     Math.floor(currentInnings.balls / 6) >= clamp(state.oversLimit, 1, 50);
@@ -3124,8 +3126,41 @@ function ScoringApp() {
                       testId="input-team-b"
                     />
                   </div>
+
+                  {/* NEW: Scoreboard display selection (admin only, locked after confirm) */}
+                  <Card className="mt-4 bg-card/60 border p-3">
+                    <p className="text-sm font-semibold">Scoreboard type</p>
+                    <p className="text-xs text-muted-foreground">
+                      {state.setupCompleted
+                        ? "Locked after match setup is confirmed."
+                        : "Choose how the scoreboard is displayed for admins and viewers."}
+                    </p>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button
+                        variant={scoreboardDisplay === "skins" ? "secondary" : "outline"}
+                        className="tap pressable"
+                        disabled={!isAdmin || state.setupCompleted}
+                        onClick={() => setScoreboardDisplay("skins")}
+                        data-testid="button-scoreboard-skins"
+                      >
+                        Skin-wise comparison
+                      </Button>
+                      <Button
+                        variant={scoreboardDisplay === "traditional" ? "secondary" : "outline"}
+                        className="tap pressable"
+                        disabled={!isAdmin || state.setupCompleted}
+                        onClick={() => setScoreboardDisplay("traditional")}
+                        data-testid="button-scoreboard-traditional"
+                      >
+                        Traditional scoreboard
+                      </Button>
+                    </div>
+                  </Card>
+
                   {/* Team Players Setup */}
                   <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* Team A Players */}
                     <div className="space-y-2">
                       <Label className="text-sm font-semibold">
                         Team A Players (one per line)
@@ -3140,6 +3175,7 @@ function ScoringApp() {
                       />
                     </div>
 
+                    {/* Team B Players */}
                     <div className="space-y-2">
                       <Label className="text-sm font-semibold">
                         Team B Players (one per line)
@@ -3156,217 +3192,34 @@ function ScoringApp() {
                   </div>
 
                   <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <OverLimitControl
-                      value={state.oversLimit}
+                    <Field
+                      label="Match title"
+                      value={state.title}
                       disabled={!isAdmin || state.setupCompleted}
-                      onChange={(v) =>
-                        safeSet(
-                          pushHistory({
-                            ...state,
-                            oversLimit: clamp(v, 1, 50),
-                          }),
-                        )
-                      }
+                      onChange={(v) => setMeta(v, state.venue)}
+                      testId="input-title"
                     />
-                    {/* Toss controls */}
-                    {/* Robust Toss card — adaptive grid to avoid overlap */}
-                    {/* Reliable Toss card — flex layout, wraps when space is tight */}
-                    {/* Toss card — improved accessibility: ids, htmlFor, title, focus rings, aria-live */}
-                    <Card className="bg-card/60 border p-3 sm:col-span-2">
-                      <div className="flex flex-wrap items-start gap-3">
-                        {/* Left: selects row that fills available space */}
-                        <div className="flex-1 min-w-0 flex gap-3">
-                          {/* Toss winner */}
-                          <div className="flex-1 min-w-0">
-                            <label
-                              htmlFor="toss-winner-select"
-                              className="text-sm font-semibold mb-1 inline-block"
-                            >
-                              Toss winner
-                            </label>
-                            <select
-                              id="toss-winner-select"
-                              className="h-11 w-full rounded-xl border bg-card/70 px-4 pr-10 min-w-0 focus:outline-none focus:ring-2 focus:ring-primary/40"
-                              title={
-                                tossWinnerSel
-                                  ? state.teams[tossWinnerSel].name
-                                  : "Select toss winner"
-                              }
-                              value={tossWinnerSel}
-                              onChange={(e) =>
-                                setTossWinnerSel(
-                                  e.target.value as "a" | "b" | "",
-                                )
-                              }
-                              data-testid="select-toss-winner"
-                            >
-                              <option value="">Select</option>
-                              <option value="a">{state.teams.a.name}</option>
-                              <option value="b">{state.teams.b.name}</option>
-                            </select>
-                          </div>
-
-                          {/* Choice */}
-                          <div className="flex-1 min-w-0">
-                            <label
-                              htmlFor="toss-choice-select"
-                              className="text-sm font-semibold mb-1 inline-block"
-                            >
-                              Choice
-                            </label>
-                            <select
-                              id="toss-choice-select"
-                              className="h-11 w-full rounded-xl border bg-card/70 px-4 pr-10 min-w-0 focus:outline-none focus:ring-2 focus:ring-primary/40"
-                              title={
-                                tossChoiceSel ? tossChoiceSel : "Select choice"
-                              }
-                              value={tossChoiceSel}
-                              onChange={(e) =>
-                                setTossChoiceSel(
-                                  e.target.value as "bat" | "bowl" | "",
-                                )
-                              }
-                              data-testid="select-toss-choice"
-                            >
-                              <option value="">Select</option>
-                              <option value="bat">Bat</option>
-                              <option value="bowl">Bowl</option>
-                            </select>
-                          </div>
-                        </div>
-
-                        {/* Right: apply button never shrinks; wraps below if not enough horizontal space */}
-                        <div className="flex-shrink-0 self-end">
-                          <Button
-                            variant="secondary"
-                            className="h-11 focus:outline-none focus:ring-2 focus:ring-primary/40"
-                            onClick={applyToss}
-                            disabled={
-                              !isAdmin || !tossWinnerSel || !tossChoiceSel
-                            }
-                            data-testid="button-apply-toss"
-                          >
-                            Apply Toss
-                          </Button>
-                        </div>
-
-                        {/* Summary — full width underneath; announce changes for assistive tech */}
-                        <div
-                          className="w-full mt-2"
-                          aria-live="polite"
-                          role="status"
-                        >
-                          <div className="rounded-md border bg-muted/5 px-3 py-2 text-sm text-muted-foreground min-w-0">
-                            {state.tossWinner && state.tossChoice ? (
-                              <span data-testid="text-toss-summary">
-                                <strong className="font-semibold">
-                                  {state.teams[state.tossWinner].name}
-                                </strong>{" "}
-                                won the toss and chose to {state.tossChoice}.
-                              </span>
-                            ) : (
-                              <span className="text-muted-foreground">
-                                No toss recorded
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </Card>
-                    <div className="sm:col-span-3">
-                      <Button
-                        className="w-full tap pressable"
-                        disabled={!isAdmin || state.setupCompleted}
-                        onClick={confirmMatchSetup}
-                      >
-                        {state.setupCompleted
-                          ? "Match Setup Confirmed"
-                          : "Confirm Match Details"}
-                      </Button>
-                    </div>
-
-                    <Card className="bg-card/60 border p-3 sm:col-span-2">
-                      <p
-                        className="text-sm font-semibold"
-                        data-testid="text-share-heading"
-                      >
-                        Share links
-                      </p>
-                      <p
-                        className="mt-1 text-xs text-muted-foreground"
-                        data-testid="text-share-sub"
-                      >
-                        Viewer is read-only. Admin requires the key.
-                      </p>
-                      <div className="mt-3 flex flex-col gap-2">
-                        <div className="flex gap-2">
-                          <Button
-                            variant="secondary"
-                            className="tap pressable w-full justify-center"
-                            onClick={() =>
-                              copy(viewerLink, "Viewer link copied")
-                            }
-                            data-testid="button-share-viewer"
-                          >
-                            <Eye className="h-4 w-4" /> Copy viewer link
-                          </Button>
-                          <Button
-                            variant="outline"
-                            className="tap pressable w-full justify-center"
-                            onClick={() => copy(adminLink, "Admin link copied")}
-                            disabled={!isAdmin}
-                            data-testid="button-share-admin"
-                          >
-                            <Crown className="h-4 w-4" /> Copy admin link
-                          </Button>
-                        </div>
-
-                        <div
-                          className="rounded-xl border bg-card/60 p-2 text-xs text-muted-foreground break-all"
-                          data-testid="text-viewer-link"
-                        >
-                          {viewerLink}
-                        </div>
-                      </div>
-
-                      <div className="mt-4 flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2">
-                          <Label
-                            className="text-sm"
-                            htmlFor="toggle-viewer"
-                            data-testid="label-viewer-mode"
-                          >
-                            Viewer mode
-                          </Label>
-                          <Switch
-                            id="toggle-viewer"
-                            checked={role === "viewer"}
-                            onCheckedChange={(checked) => {
-                              const nextMode: Role = checked
-                                ? "viewer"
-                                : "admin";
-                              const nextSearch =
-                                nextMode === "viewer"
-                                  ? setQueryParam(url.search, "mode", "viewer")
-                                  : setQueryParam(
-                                      setQueryParam(
-                                        url.search,
-                                        "mode",
-                                        "admin",
-                                      ),
-                                      "key",
-                                      state.adminKey,
-                                    );
-                              setLocation(
-                                `/match/${encodeURIComponent(state.matchId)}${nextSearch}`,
-                              );
-                            }}
-                            disabled={!isAdmin}
-                            data-testid="switch-viewer-mode"
-                          />
-                        </div>
-                      </div>
-                    </Card>
+                    <Field
+                      label="Venue"
+                      value={state.venue}
+                      disabled={!isAdmin || state.setupCompleted}
+                      onChange={(v) => setMeta(state.title, v)}
+                      testId="input-venue"
+                    />
+                    <Field
+                      label="Team A"
+                      value={state.teams.a.name}
+                      disabled={!isAdmin || state.setupCompleted}
+                      onChange={(v) => setTeams(v, state.teams.b.name)}
+                      testId="input-team-a"
+                    />
+                    <Field
+                      label="Team B"
+                      value={state.teams.b.name}
+                      disabled={!isAdmin || state.setupCompleted}
+                      onChange={(v) => setTeams(state.teams.a.name, v)}
+                      testId="input-team-b"
+                    />
                   </div>
                 </TabsContent>
               </Tabs>
@@ -3523,197 +3376,147 @@ function ScoringApp() {
                 </div>
               </div>
             </Card>
-            <Card className="glass p-4 sm:p-6">
-              <p className="text-sm font-semibold mb-3">Skin-wise Comparison</p>
 
-              <div className="grid grid-cols-4 text-sm font-semibold border-b pb-2">
-                <div>Skin</div>
-                <div className="text-center">{state.teams.a.name}</div>
-                <div className="text-center">{state.teams.b.name}</div>
-                <div className="text-center">Winner</div>
-              </div>
+            {/* Scoreboard display (right column) */}
+            {scoreboardDisplay === "traditional" ? (
+              <TraditionalScoreboardCard
+                state={state}
+                teamAName={state.teams.a.name}
+                teamBName={state.teams.b.name}
+                inningsA={state.innings[0] ?? null}
+                inningsB={state.innings[1] ?? null}
+              />
+            ) : (
+              <Card className="glass p-4 sm:p-6">
+                <p className="text-sm font-semibold mb-3">Skin-wise Comparison</p>
 
-              {[0, 1, 2, 3].map((skin) => {
-                function getSkinNet(
-                  inn: Innings | undefined,
-                  skinIndex: number,
-                ): number | null {
-                  if (!inn) return null;
+                <div className="grid grid-cols-4 text-sm font-semibold border-b pb-2">
+                  <div>Skin</div>
+                  <div className="text-center">{state.teams.a.name}</div>
+                  <div className="text-center">{state.teams.b.name}</div>
+                  <div className="text-center">Winner</div>
+                </div>
 
-                  // If there are no events at all in this innings and no completed skins,
-                  // treat the skin as not-yet-started → return null (so UI shows —)
-                  if (
-                    (inn.deliveries ?? 0) === 0 &&
-                    (inn.completedSkins?.length ?? 0) === 0
-                  ) {
+                {[0, 1, 2, 3].map((skin) => {
+                  function getSkinNet(
+                    inn: Innings | undefined,
+                    skinIndex: number,
+                  ): number | null {
+                    if (!inn) return null;
+
+                    // If there are no events at all in this innings and no completed skins,
+                    // treat the skin as not-yet-started → return null (so UI shows —)
+                    if (
+                      (inn.deliveries ?? 0) === 0 &&
+                      (inn.completedSkins?.length ?? 0) === 0
+                    ) {
+                      return null;
+                    }
+
+                    // Completed skin
+                    if (inn.completedSkins?.[skinIndex]) {
+                      return inn.completedSkins[skinIndex].netRuns;
+                    }
+
+                    // Live skin: only show live net if this is the active skin and there have been deliveries
+                    if (inn.skinIndex === skinIndex) {
+                      return computeLiveSkinNet(inn);
+                    }
+
                     return null;
                   }
 
-                  // Completed skin
-                  if (inn.completedSkins?.[skinIndex]) {
-                    return inn.completedSkins[skinIndex].netRuns;
+                  const aNet = getSkinNet(state.innings[0], skin);
+                  const bNet = getSkinNet(state.innings[1], skin);
+
+                  // Only declare a winner after BOTH teams have completed this skin.
+                  const aCompleted = !!state.innings[0]?.completedSkins?.[skin];
+                  const bCompleted = !!state.innings[1]?.completedSkins?.[skin];
+
+                  let winner = "—";
+
+                  if (
+                    aNet !== null &&
+                    bNet !== null &&
+                    aCompleted &&
+                    bCompleted
+                  ) {
+                    if (aNet > bNet) winner = state.teams.a.name;
+                    else if (bNet > aNet) winner = state.teams.b.name;
+                    else winner = "Tie";
                   }
 
-                  // Live skin: only show live net if this is the active skin and there have been deliveries
-                  if (inn.skinIndex === skinIndex) {
-                    return computeLiveSkinNet(inn);
-                  }
+                  // helper to read finishing pair (if any) for an innings' completed skin
+                  const finishingPairFor = (innIdx: 0 | 1) => {
+                    const innings = state.innings[innIdx];
+                    const entry = innings?.completedSkins?.[skin];
+                    return entry?.batters && entry.batters.length
+                      ? entry.batters
+                      : null;
+                  };
 
-                  return null;
-                }
+                  const aPair = finishingPairFor(0);
+                  const bPair = finishingPairFor(1);
 
-                const aNet = getSkinNet(state.innings[0], skin);
-                const bNet = getSkinNet(state.innings[1], skin);
+                  return (
+                    <div
+                      key={skin}
+                      className="grid grid-cols-4 text-sm py-2 border-b"
+                    >
+                      <div>Skin {skin + 1}</div>
 
-                // Only declare a winner after BOTH teams have completed this skin.
-                const aCompleted = !!state.innings[0]?.completedSkins?.[skin];
-                const bCompleted = !!state.innings[1]?.completedSkins?.[skin];
-
-                let winner = "—";
-
-                if (
-                  aNet !== null &&
-                  bNet !== null &&
-                  aCompleted &&
-                  bCompleted
-                ) {
-                  if (aNet > bNet) winner = state.teams.a.name;
-                  else if (bNet > aNet) winner = state.teams.b.name;
-                  else winner = "Tie";
-                }
-
-                // helper to read finishing pair (if any) for an innings' completed skin
-                const finishingPairFor = (innIdx: 0 | 1) => {
-                  const innings = state.innings[innIdx];
-                  const entry = innings?.completedSkins?.[skin];
-                  return entry?.batters && entry.batters.length
-                    ? entry.batters
-                    : null;
-                };
-
-                const aPair = finishingPairFor(0);
-                const bPair = finishingPairFor(1);
-
-                return (
-                  <div
-                    key={skin}
-                    className="grid grid-cols-4 text-sm py-2 border-b"
-                  >
-                    <div>Skin {skin + 1}</div>
-
-                    {/* Team A: net + finishing pair (if completed) */}
-                    <div className="text-center">
-                      {aNet ?? "—"}
-                      {aCompleted && aPair ? (
-                        <div
-                          className="text-xs text-muted-foreground mt-1"
-                          title={aPair.join(", ")}
-                        >
-                          <span
-                            style={{
-                              whiteSpace: "nowrap",
-                              display: "inline-block",
-                              maxWidth: "160px",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
+                      {/* Team A: net + finishing pair (if completed) */}
+                      <div className="text-center">
+                        {aNet ?? "—"}
+                        {aCompleted && aPair ? (
+                          <div
+                            className="text-xs text-muted-foreground mt-1"
+                            title={aPair.join(", ")}
                           >
-                            {aPair.join(" · ")}
-                          </span>
-                        </div>
-                      ) : null}
-                    </div>
+                            <span
+                              style={{
+                                whiteSpace: "nowrap",
+                                display: "inline-block",
+                                maxWidth: "160px",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}
+                            >
+                              {aPair.join(" · ")}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
 
-                    {/* Team B: net + finishing pair (if completed) */}
-                    <div className="text-center">
-                      {bNet ?? "—"}
-                      {bCompleted && bPair ? (
-                        <div
-                          className="text-xs text-muted-foreground mt-1"
-                          title={bPair.join(", ")}
-                        >
-                          <span
-                            style={{
-                              whiteSpace: "nowrap",
-                              display: "inline-block",
-                              maxWidth: "160px",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
+                      {/* Team B: net + finishing pair (if completed) */}
+                      <div className="text-center">
+                        {bNet ?? "—"}
+                        {bCompleted && bPair ? (
+                          <div
+                            className="text-xs text-muted-foreground mt-1"
+                            title={bPair.join(", ")}
                           >
-                            {bPair.join(" · ")}
-                          </span>
-                        </div>
-                      ) : null}
+                            <span
+                              style={{
+                                whiteSpace: "nowrap",
+                                display: "inline-block",
+                                maxWidth: "160px",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}
+                            >
+                              {bPair.join(" · ")}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="text-center">{winner}</div>
                     </div>
-
-                    <div className="text-center">{winner}</div>
-                  </div>
-                );
-              })}
-            </Card>
-
-            <Card className="glass p-4 sm:p-6">
-              <p
-                className="text-sm font-semibold"
-                data-testid="text-mode-heading"
-              >
-                Mode
-              </p>
-              <div className="mt-2 flex items-center justify-between gap-3">
-                <div>
-                  <p
-                    className="text-sm font-semibold"
-                    data-testid="text-mode-value"
-                  >
-                    {isAdmin ? "Admin (Scorer)" : "Viewer (Read-only)"}
-                  </p>
-                  <p
-                    className="text-xs text-muted-foreground"
-                    data-testid="text-mode-help"
-                  >
-                    {isAdmin
-                      ? "This device can update the score and manage innings."
-                      : "This device can only view the match."}
-                  </p>
-                </div>
-                <span
-                  className={cn(
-                    "rounded-full px-2.5 py-1 text-xs font-semibold",
-                    isAdmin
-                      ? "bg-primary/10 text-primary"
-                      : "bg-secondary text-secondary-foreground",
-                  )}
-                  data-testid="status-mode-chip"
-                >
-                  {isAdmin ? "Admin" : "Viewer"}
-                </span>
-              </div>
-
-              <Separator className="my-4" />
-
-              <div className="grid grid-cols-1 gap-2">
-                <Button
-                  variant="secondary"
-                  className="tap pressable justify-start"
-                  onClick={() => copy(viewerLink, "Viewer link copied")}
-                  data-testid="button-copy-viewer-side"
-                >
-                  <Eye className="h-4 w-4" /> Copy viewer link
-                </Button>
-
-                {isAdmin ? (
-                  <Button
-                    variant="outline"
-                    className="tap pressable justify-start"
-                    onClick={() => copy(adminLink, "Admin link copied")}
-                    data-testid="button-copy-admin-side"
-                  >
-                    <Crown className="h-4 w-4" /> Copy admin link
-                  </Button>
-                ) : null}
-              </div>
-            </Card>
+                  );
+                })}
+              </Card>
+            )}
           </div>
         </div>
         {showResetConfirm ? (
@@ -4009,80 +3812,52 @@ function Field({
   );
 }
 
-function ScoreStat({
-  label,
-  value,
-  testId,
+function TraditionalScoreboardCard({
+  teamAName,
+  teamBName,
+  inningsA,
+  inningsB,
 }: {
-  label: string;
-  value: string;
-  testId: string;
+  state: MatchState;
+  teamAName: string;
+  teamBName: string;
+  inningsA: Innings | null;
+  inningsB: Innings | null;
 }) {
-  return (
-    <div className="rounded-2xl border bg-card/60 p-3">
-      <p
-        className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
-        data-testid={`label-${testId}`}
-      >
-        {label}
-      </p>
-      <p className="mt-1 font-display text-2xl" data-testid={`text-${testId}`}>
-        {value}
-      </p>
-    </div>
-  );
-}
+  const aNet = computeInningsNet(inningsA);
+  const bNet = computeInningsNet(inningsB);
 
-function OverLimitControl({
-  value,
-  disabled,
-  onChange,
-}: {
-  value: number;
-  disabled?: boolean;
-  onChange: (v: number) => void;
-}) {
+  const aGross = inningsA?.runs ?? 0;
+  const bGross = inningsB?.runs ?? 0;
+  const aOuts = inningsA?.wickets ?? 0;
+  const bOuts = inningsB?.wickets ?? 0;
+
+  const aOvers = formatOvers(inningsA?.balls ?? 0);
+  const bOvers = formatOvers(inningsB?.balls ?? 0);
+
   return (
-    <Card className="bg-card/60 border p-3">
-      <p
-        className="text-sm font-semibold"
-        data-testid="text-overs-limit-heading"
-      >
-        Overs limit
-      </p>
-      <p
-        className="text-xs text-muted-foreground"
-        data-testid="text-overs-limit-sub"
-      >
-        Typical indoor: 16 overs.
-      </p>
-      <div className="mt-3 flex items-center gap-2">
-        <Button
-          variant="secondary"
-          className="tap pressable h-10 w-12 rounded-xl"
-          disabled={disabled}
-          onClick={() => onChange(Math.max(1, value - 1))}
-          data-testid="button-overs-minus"
-        >
-          −
-        </Button>
-        <div className="flex-1 rounded-xl border bg-card/60 px-3 py-2 text-center">
-          <span
-            className="text-sm font-semibold"
-            data-testid="text-overs-value"
-          >
-            {value}
-          </span>
-        </div>
-        <Button
-          variant="secondary"
-          className="tap pressable h-10 w-12 rounded-xl"
-          disabled={disabled}
-          onClick={() => onChange(Math.min(50, value + 1))}
-          data-testid="button-overs-plus"
-        >
-          +
-        </Button>
+    <Card className="glass p-4 sm:p-6">
+      <p className="text-sm font-semibold mb-3">Traditional Scoreboard</p>
+
+      <div className="grid grid-cols-4 text-sm font-semibold border-b pb-2">
+        <div>Team</div>
+        <div className="text-center">Net</div>
+        <div className="text-center">Gross</div>
+        <div className="text-center">Overs</div>
+      </div>
+
+      <div className="grid grid-cols-4 text-sm py-2 border-b">
+        <div className="font-medium">{teamAName}</div>
+        <div className="text-center">{aNet}</div>
+        <div className="text-center">{aGross}/{aOuts}</div>
+        <div className="text-center">{aOvers}</div>
+      </div>
+
+      <div className="grid grid-cols-4 text-sm py-2">
+        <div className="font-medium">{teamBName}</div>
+        <div className="text-center">{bNet}</div>
+        <div className="text-center">{bGross}/{bOuts}</div>
+        <div className="text-center">{bOvers}</div>
       </div>
     </Card>
   );

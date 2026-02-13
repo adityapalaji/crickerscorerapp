@@ -9,9 +9,11 @@ function uid(prefix = "id") {
 export function createDefaultMatchState(params?: {
   matchId?: string;
   adminKey?: string;
+  scoreboardDisplay?: "skins" | "traditional";
 }) {
   const matchId = params?.matchId ?? uid("match");
   const adminKey = params?.adminKey ?? uid("admin");
+  const scoreboardDisplay = params?.scoreboardDisplay ?? "skins";
 
   return {
     version: 1,
@@ -68,6 +70,9 @@ export function createDefaultMatchState(params?: {
     status: "setup",
     tossWinner: null,
     tossChoice: null,
+
+    // NEW: persisted UI preference (rendering only)
+    scoreboardDisplay,
 
     adminKey,
     history: { snapshots: [] as any[] },
