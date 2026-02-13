@@ -48,6 +48,14 @@ type BallEvent = {
   countsBall: boolean;
   isWicket?: boolean;
   note?: string;
+
+  // Persisted attribution so stats remain correct when players/bowlers change.
+  strikerAtEvent?: string;
+  nonStrikerAtEvent?: string;
+  bowlerAtEvent?: string;
+
+  // Runs credited to batter only (extras credited to team total, not batter).
+  batterRuns?: number;
 };
 type SkinScore = {
   skin: number;
@@ -304,22 +312,47 @@ function isExtraMarkedWicket(
 // --- END helper ---
 
 function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
+  // Normalize/attribute the event at the moment it's created.
+  const type = ev.type;
+  const isWicket = ev.isWicket ?? type === "wicket";
+
+  const strikerAtEvent = ev.strikerAtEvent ?? inn.striker ?? "";
+  const nonStrikerAtEvent = ev.nonStrikerAtEvent ?? inn.nonStriker ?? "";
+  const bowlerAtEvent = ev.bowlerAtEvent ?? inn.bowler ?? "";
+
+  // Batter runs: only for normal run events. Everything else is extras/team runs.
+  const batterRuns =
+    typeof ev.batterRuns === "number"
+      ? ev.batterRuns
+      : type === "run"
+        ? ev.runs
+        : 0;
+
+  const normalizedEv: BallEvent = {
+    ...ev,
+    isWicket,
+    strikerAtEvent,
+    nonStrikerAtEvent,
+    bowlerAtEvent,
+    batterRuns,
+  };
+
   const updatedCurrentSkin = {
-    grossRuns: inn.currentSkin.grossRuns + ev.runs,
-    wickets: inn.currentSkin.wickets + (ev.isWicket ? 1 : 0),
+    grossRuns: inn.currentSkin.grossRuns + normalizedEv.runs,
+    wickets: inn.currentSkin.wickets + (normalizedEv.isWicket ? 1 : 0),
   };
 
   const next: Innings = {
     ...inn,
-    runs: inn.runs + ev.runs,
-    allBalls: [...inn.allBalls, ev],
-    wickets: inn.wickets + (ev.isWicket ? 1 : 0),
-    balls: inn.balls + (ev.countsBall ? 1 : 0),
+    runs: inn.runs + normalizedEv.runs,
+    allBalls: [...inn.allBalls, normalizedEv],
+    wickets: inn.wickets + (normalizedEv.isWicket ? 1 : 0),
+    balls: inn.balls + (normalizedEv.countsBall ? 1 : 0),
     deliveries: inn.deliveries + 1,
-    ballsInSkin: inn.ballsInSkin + (ev.countsBall ? 1 : 0),
-    currentSkin: updatedCurrentSkin, // ✅ ADD THIS
-    overEvents: [...inn.overEvents, ev],
-    dotBalls: ev.type === "dot" ? inn.dotBalls + 1 : 0,
+    ballsInSkin: inn.ballsInSkin + (normalizedEv.countsBall ? 1 : 0),
+    currentSkin: updatedCurrentSkin,
+    overEvents: [...inn.overEvents, normalizedEv],
+    dotBalls: normalizedEv.type === "dot" ? inn.dotBalls + 1 : 0,
   };
 
   // Skin ends after 4 overs (24 balls)
@@ -364,14 +397,20 @@ function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
     ].filter((b): b is string => Boolean(b));
   }
 
-  if (ev.type === "wide")
-    next.extras = { ...next.extras, wide: next.extras.wide + ev.runs };
-  if (ev.type === "noball")
-    next.extras = { ...next.extras, noball: next.extras.noball + ev.runs };
-  if (ev.type === "bye")
-    next.extras = { ...next.extras, bye: next.extras.bye + ev.runs };
-  if (ev.type === "legbye")
-    next.extras = { ...next.extras, legbye: next.extras.legbye + ev.runs };
+  if (normalizedEv.type === "wide")
+    next.extras = { ...next.extras, wide: next.extras.wide + normalizedEv.runs };
+  if (normalizedEv.type === "noball")
+    next.extras = {
+      ...next.extras,
+      noball: next.extras.noball + normalizedEv.runs,
+    };
+  if (normalizedEv.type === "bye")
+    next.extras = { ...next.extras, bye: next.extras.bye + normalizedEv.runs };
+  if (normalizedEv.type === "legbye")
+    next.extras = {
+      ...next.extras,
+      legbye: next.extras.legbye + normalizedEv.runs,
+    };
 
   // Only mark the over as completed when a legal delivery has just
   // advanced the balls count to a multiple of 6. This avoids treating
@@ -379,7 +418,7 @@ function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
   // as the *last* over.
   const prevBalls = inn.balls;
   if (
-    ev.countsBall && // this event counted as a legal ball
+    normalizedEv.countsBall && // this event counted as a legal ball
     prevBalls % 6 !== 0 && // previous balls were not already at a boundary
     next.balls % 6 === 0 && // now we've reached a multiple of 6 → over complete
     next.overEvents.length
@@ -392,8 +431,8 @@ function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
   }
 
   // Track bowler balls (only legal balls)
-  if (ev.countsBall) {
-    const bowler = inn.bowler;
+  if (normalizedEv.countsBall) {
+    const bowler = bowlerAtEvent;
     const current = next.bowlerBalls[bowler] ?? 0;
 
     next.bowlerBalls = {
@@ -1508,7 +1547,7 @@ function ScoringApp() {
     safeSet({ ...withHistory, innings, status: "live" });
   }
 
-  function addRun(runs: number) {
+    function addRun(runs: number) {
     if (!isReadyToScore) {
       toast({
         title: "Select players first",
@@ -1533,6 +1572,10 @@ function ScoringApp() {
           countsBall: true,
           isWicket: true,
           note: "Auto OUT (3 dot balls)",
+          strikerAtEvent: inn.striker,
+          nonStrikerAtEvent: inn.nonStriker,
+          bowlerAtEvent: inn.bowler,
+          batterRuns: 0,
         });
         return;
       }
@@ -1543,6 +1586,10 @@ function ScoringApp() {
         type: "dot",
         runs: 0,
         countsBall: true,
+        strikerAtEvent: inn.striker,
+        nonStrikerAtEvent: inn.nonStriker,
+        bowlerAtEvent: inn.bowler,
+        batterRuns: 0,
       });
       return;
     }
@@ -1553,8 +1600,12 @@ function ScoringApp() {
       type: "run",
       runs,
       countsBall: true,
+      strikerAtEvent: inn.striker,
+      nonStrikerAtEvent: inn.nonStriker,
+      bowlerAtEvent: inn.bowler,
+      batterRuns: runs,
     });
-  }
+    }
 
   // --- REPLACE: addWicket() ---
   // --- REPLACE / ADD: addWicket() ---
@@ -1818,7 +1869,7 @@ function ScoringApp() {
   }
 
   // 2) Append a normal wicket as a separate delivery (this is the global W button behavior)
-  function addWicket() {
+    function addWicket() {
     // short lock to avoid double clicks (keeps UI safe)
     if (wicketLockRef.current) return;
     wicketLockRef.current = true;
@@ -1863,12 +1914,16 @@ function ScoringApp() {
       countsBall: true,
       isWicket: true,
       note: "Wicket",
+      strikerAtEvent: inn.striker,
+      nonStrikerAtEvent: inn.nonStriker,
+      bowlerAtEvent: inn.bowler,
+      batterRuns: 0,
     });
-  }
+    }
   // --- END addWicket() ---
   // --- END addWicket replacement ---
 
-  function addExtra(type: "wide" | "noball" | "bye" | "legbye", runs: number) {
+    function addExtra(type: "wide" | "noball" | "bye" | "legbye", runs: number) {
     if (!isReadyToScore) {
       toast({
         title: "Select players first",
@@ -1901,8 +1956,12 @@ function ScoringApp() {
       type,
       runs: totalRuns,
       countsBall,
+      strikerAtEvent: inn.striker,
+      nonStrikerAtEvent: inn.nonStriker,
+      bowlerAtEvent: inn.bowler,
+      batterRuns: 0,
     });
-  }
+    }
 
   const battingName =
     currentInnings.battingTeamId === "a"
@@ -3888,6 +3947,8 @@ function TraditionalScoreboardCard({
       : teamBName
     : teamAName;
 
+  const innNet = computeInningsNet(activeInnings);
+
   const totalRuns = activeInnings?.runs ?? 0;
   const totalOuts = activeInnings?.wickets ?? 0;
   const totalOvers = formatOvers(activeInnings?.balls ?? 0);
@@ -3919,81 +3980,58 @@ function TraditionalScoreboardCard({
     if (!inn) return [];
 
     const stats = new Map<string, BatterStat>();
-    const ensure = (name: string) => {
+    const ensure = (name: string, skin: number | null) => {
       const key = String(name || "").trim();
       if (!key) return null;
       if (!stats.has(key))
-        stats.set(key, { name: key, runs: 0, balls: 0, outs: 0, skin: null });
+        stats.set(key, { name: key, runs: 0, balls: 0, outs: 0, skin });
       return stats.get(key)!;
     };
 
-    // Seed current pair so they appear even before any deliveries.
-    ensure(inn.striker);
-    ensure(inn.nonStriker);
+    const events = (inn.allBalls ?? []) as BallEvent[];
 
-    let striker = String(inn.striker ?? "");
-    let nonStriker = String(inn.nonStriker ?? "");
-
-    const events = (inn.allBalls ?? []) as any[];
-
-    // Track the number of LEGAL deliveries seen so far in this innings.
-    // Skin = floor(legalBallIndex / 24) + 1 (skin length is 24 legal balls).
     let legalBallIndex = 0;
-
     for (const ev of events) {
-      const type = ev?.type as string;
-      const runs = Number(ev?.runs ?? 0);
-      const countsBall = Boolean(ev?.countsBall);
-      const isWicket = Boolean(ev?.isWicket) || type === "wicket";
+      const countsBall = Boolean(ev.countsBall);
+      const type = String(ev.type);
 
-      // Non-ball events (like substitutions) shouldn't affect skin/balls/runs.
-      if (!countsBall && !isWicket && type !== "run" && type !== "dot") {
-        continue;
-      }
+      // Ignore non-delivery meta events if any exist
+      const isExtra =
+        type === "wide" ||
+        type === "noball" ||
+        type === "bye" ||
+        type === "legbye";
+      const isDeliveryLike =
+        countsBall || type === "wicket" || type === "run" || type === "dot" || isExtra;
+      if (!isDeliveryLike) continue;
 
-      // If we don't have a striker yet, we can't attribute reliably.
-      if (!striker) {
-        striker = String(inn.striker ?? "");
-        nonStriker = String(inn.nonStriker ?? "");
-      }
+      const skin = countsBall ? Math.floor(legalBallIndex / 24) + 1 : null;
 
-      const s = ensure(striker);
-      if (!s) {
-        if (countsBall) legalBallIndex += 1;
-        continue;
-      }
+      const batter = String(ev.strikerAtEvent ?? "").trim();
+      const s = ensure(batter, skin);
+      if (s) {
+        // balls faced: legal deliveries only
+        if (countsBall) s.balls += 1;
 
-      // Skin tag: infer from the innings legal ball index (0-23 => Skin 1, 24-47 => Skin 2, etc.)
-      if (countsBall) {
-        const skin = Math.floor(legalBallIndex / 24) + 1;
-        if (s.skin == null) s.skin = skin;
-      }
+        // runs credited to batter: only batterRuns
+        s.runs += Number(ev.batterRuns ?? 0);
 
-      // Balls faced: legal deliveries only
-      if (countsBall) s.balls += 1;
-
-      // Runs: only credit normal run events
-      if (type === "run") {
-        s.runs += runs;
-        // Swap strike on odd runs
-        if (runs % 2 === 1) {
-          const tmp = striker;
-          striker = nonStriker;
-          nonStriker = tmp;
-        }
-      }
-
-      if (isWicket) {
-        s.outs += 1;
+        // striker out
+        if (ev.isWicket || type === "wicket") s.outs += 1;
       }
 
       if (countsBall) legalBallIndex += 1;
     }
 
+    // Seed current pair so they appear even with 0.
+    ensure(inn.striker, null);
+    ensure(inn.nonStriker, null);
+
     const currentPair = [
       String(inn.striker ?? "").trim(),
       String(inn.nonStriker ?? "").trim(),
     ].filter(Boolean);
+
     const all = Array.from(stats.values());
 
     const inPair = new Set(currentPair);
@@ -4019,68 +4057,39 @@ function TraditionalScoreboardCard({
     const ensure = (name: string) => {
       const key = String(name || "").trim();
       if (!key) return null;
-      if (!stats.has(key)) stats.set(key, { name: key, balls: 0, runs: 0, wickets: 0 });
+      if (!stats.has(key))
+        stats.set(key, { name: key, balls: 0, runs: 0, wickets: 0 });
       return stats.get(key)!;
     };
 
-    // Build a stable guess for which bowler delivered each event.
-    // We only have `inn.bowler` (current over) and `inn.lastOverBowler` (previous over),
-    // so infer by walking events and switching bowler every 6 legal balls.
-    let currentBowler = String(inn.lastOverBowler ?? inn.bowler ?? "");
-    let legalInCurrentOver = 0;
+    const events = (inn.allBalls ?? []) as BallEvent[];
 
-    const events = (inn.allBalls ?? []) as any[];
     for (const ev of events) {
-      const type = String(ev?.type ?? "");
-      const runs = Number(ev?.runs ?? 0);
-      const countsBall = Boolean(ev?.countsBall);
-      const isWicket = Boolean(ev?.isWicket) || type === "wicket";
+      const type = String(ev.type);
+      const countsBall = Boolean(ev.countsBall);
 
-      // Ignore non-delivery meta events.
-      if (!countsBall && type !== "wide" && type !== "noball" && type !== "bye" && type !== "legbye") {
-        continue;
-      }
+      const isExtra =
+        type === "wide" ||
+        type === "noball" ||
+        type === "bye" ||
+        type === "legbye";
+      const isDeliveryLike =
+        countsBall || type === "wicket" || type === "run" || type === "dot" || isExtra;
+      if (!isDeliveryLike) continue;
 
-      // Ensure we have a bowler bucket.
-      const b = ensure(currentBowler);
-      if (!b) {
-        // If bowler missing, we can’t attribute; still advance over ball counter if legal.
-        if (countsBall) {
-          legalInCurrentOver += 1;
-          if (legalInCurrentOver === 6) legalInCurrentOver = 0;
-        }
-        continue;
-      }
-
-      // Runs off the ball (including extras) are charged to the bowler in this simplified model.
-      b.runs += runs;
-      if (isWicket) b.wickets += 1;
-
-      if (countsBall) {
-        b.balls += 1;
-        legalInCurrentOver += 1;
-        if (legalInCurrentOver === 6) {
-          legalInCurrentOver = 0;
-          // Move to next over. Best effort: keep using `inn.bowler` for the current/next over if set;
-          // otherwise keep the last known bowler.
-          currentBowler = String(inn.bowler ?? currentBowler);
-        }
-      }
-    }
-
-    // Merge in bowler ball counts from the authoritative map (legal balls only).
-    // This keeps overs correct even if inference missed some.
-    for (const [bowlerName, balls] of Object.entries(inn.bowlerBalls ?? {})) {
-      const b = ensure(bowlerName);
+      const bowler = String(ev.bowlerAtEvent ?? "").trim();
+      const b = ensure(bowler);
       if (!b) continue;
-      b.balls = Math.max(b.balls, Number(balls ?? 0));
+
+      b.runs += Number(ev.runs ?? 0);
+      if (ev.isWicket || type === "wicket") b.wickets += 1;
+      if (countsBall) b.balls += 1;
     }
 
     const rows = Array.from(stats.values()).filter(
       (r) => (r.balls ?? 0) > 0 || (r.runs ?? 0) > 0 || (r.wickets ?? 0) > 0,
     );
 
-    // Sort by wickets desc, then runs asc, then name.
     rows.sort((a, b) => {
       if (b.wickets !== a.wickets) return b.wickets - a.wickets;
       if (a.runs !== b.runs) return a.runs - b.runs;
@@ -4096,13 +4105,20 @@ function TraditionalScoreboardCard({
     <Card className="glass p-4 sm:p-6">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-semibold">{battingTeamName}</p>
+          <p className="text-sm font-semibold truncate">{battingTeamName}</p>
         </div>
         <div className="text-right">
-          <p className="text-2xl font-display leading-none">
-            {totalRuns}/{totalOuts}{" "}
-            <span className="text-sm font-medium">({totalOvers} Ov)</span>
-          </p>
+          <div className="flex items-baseline justify-end gap-2">
+            <span className="text-xs font-semibold tracking-wide text-muted-foreground">
+              NET
+            </span>
+            <span className="text-2xl font-display leading-none tabular-nums">
+              {innNet}/{totalOuts}
+            </span>
+            <span className="text-sm font-medium text-muted-foreground tabular-nums">
+              ({totalOvers} Ov)
+            </span>
+          </div>
         </div>
       </div>
 
@@ -4127,7 +4143,11 @@ function TraditionalScoreboardCard({
                     {b.name}
                   </div>
                   {b.skin ? (
-                    <div className="text-xs text-muted-foreground">Skin {b.skin}</div>
+                    <div className="mt-1">
+                      <span className="inline-flex items-center rounded-md border bg-muted/20 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                        Skin {b.skin}
+                      </span>
+                    </div>
                   ) : null}
                 </div>
                 <div className="text-right tabular-nums">{b.runs}</div>
@@ -4154,7 +4174,8 @@ function TraditionalScoreboardCard({
           <div className="flex items-center justify-between font-medium">
             <span>Total</span>
             <span className="tabular-nums">
-              {totalRuns}/{totalOuts} <span className="text-muted-foreground">({totalOvers} Ov)</span>
+              {innNet}/{totalOuts}{" "}
+              <span className="text-muted-foreground">({totalOvers} Ov)</span>
             </span>
           </div>
         </div>
