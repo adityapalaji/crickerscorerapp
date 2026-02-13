@@ -3127,40 +3127,8 @@ function ScoringApp() {
                     />
                   </div>
 
-                  {/* NEW: Scoreboard display selection (admin only, locked after confirm) */}
-                  <Card className="mt-4 bg-card/60 border p-3">
-                    <p className="text-sm font-semibold">Scoreboard type</p>
-                    <p className="text-xs text-muted-foreground">
-                      {state.setupCompleted
-                        ? "Locked after match setup is confirmed."
-                        : "Choose how the scoreboard is displayed for admins and viewers."}
-                    </p>
-
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <Button
-                        variant={scoreboardDisplay === "skins" ? "secondary" : "outline"}
-                        className="tap pressable"
-                        disabled={!isAdmin || state.setupCompleted}
-                        onClick={() => setScoreboardDisplay("skins")}
-                        data-testid="button-scoreboard-skins"
-                      >
-                        Skin-wise comparison
-                      </Button>
-                      <Button
-                        variant={scoreboardDisplay === "traditional" ? "secondary" : "outline"}
-                        className="tap pressable"
-                        disabled={!isAdmin || state.setupCompleted}
-                        onClick={() => setScoreboardDisplay("traditional")}
-                        data-testid="button-scoreboard-traditional"
-                      >
-                        Traditional scoreboard
-                      </Button>
-                    </div>
-                  </Card>
-
                   {/* Team Players Setup */}
                   <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {/* Team A Players */}
                     <div className="space-y-2">
                       <Label className="text-sm font-semibold">
                         Team A Players (one per line)
@@ -3175,7 +3143,6 @@ function ScoringApp() {
                       />
                     </div>
 
-                    {/* Team B Players */}
                     <div className="space-y-2">
                       <Label className="text-sm font-semibold">
                         Team B Players (one per line)
@@ -3191,36 +3158,120 @@ function ScoringApp() {
                     </div>
                   </div>
 
-                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <Field
-                      label="Match title"
-                      value={state.title}
-                      disabled={!isAdmin || state.setupCompleted}
-                      onChange={(v) => setMeta(v, state.venue)}
-                      testId="input-title"
-                    />
-                    <Field
-                      label="Venue"
-                      value={state.venue}
-                      disabled={!isAdmin || state.setupCompleted}
-                      onChange={(v) => setMeta(state.title, v)}
-                      testId="input-venue"
-                    />
-                    <Field
-                      label="Team A"
-                      value={state.teams.a.name}
-                      disabled={!isAdmin || state.setupCompleted}
-                      onChange={(v) => setTeams(v, state.teams.b.name)}
-                      testId="input-team-a"
-                    />
-                    <Field
-                      label="Team B"
-                      value={state.teams.b.name}
-                      disabled={!isAdmin || state.setupCompleted}
-                      onChange={(v) => setTeams(state.teams.a.name, v)}
-                      testId="input-team-b"
-                    />
+                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-[auto,1fr] gap-3">
+                    {/* Overs limit */}
+                    <Card className="bg-card/60 border p-3">
+                      <p className="text-sm font-semibold">Overs limit</p>
+                      <p className="text-xs text-muted-foreground">
+                        Typical indoor: 16 overs.
+                      </p>
+                      <div className="mt-3 flex items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="tap pressable"
+                          disabled={!isAdmin || state.setupCompleted || state.oversLimit <= 1}
+                          onClick={() => {
+                            safeSet(
+                              pushHistory({
+                                ...state,
+                                oversLimit: clamp((state.oversLimit ?? 16) - 1, 1, 50),
+                              }),
+                            );
+                          }}
+                          data-testid="button-overs-minus"
+                        >
+                          -
+                        </Button>
+                        <div
+                          className="min-w-[3rem] text-center text-sm font-semibold"
+                          data-testid="text-overs-limit"
+                        >
+                          {state.oversLimit}
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="tap pressable"
+                          disabled={!isAdmin || state.setupCompleted}
+                          onClick={() => {
+                            safeSet(
+                              pushHistory({
+                                ...state,
+                                oversLimit: clamp((state.oversLimit ?? 16) + 1, 1, 50),
+                              }),
+                            );
+                          }}
+                          data-testid="button-overs-plus"
+                        >
+                          +
+                        </Button>
+                      </div>
+                    </Card>
+
+                    {/* Toss */}
+                    <Card className="bg-card/60 border p-3">
+                      <p className="text-sm font-semibold">Toss</p>
+                      <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">Toss winner</Label>
+                          <select
+                            className="w-full rounded-xl border bg-card/70 px-3 py-2 text-sm"
+                            disabled={!isAdmin || state.setupCompleted}
+                            value={tossWinnerSel}
+                            onChange={(e) => setTossWinnerSel(e.target.value as any)}
+                            data-testid="select-toss-winner"
+                          >
+                            <option value="">Select</option>
+                            <option value="a">{state.teams.a.name}</option>
+                            <option value="b">{state.teams.b.name}</option>
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">Choice</Label>
+                          <select
+                            className="w-full rounded-xl border bg-card/70 px-3 py-2 text-sm"
+                            disabled={!isAdmin || state.setupCompleted}
+                            value={tossChoiceSel}
+                            onChange={(e) => setTossChoiceSel(e.target.value as any)}
+                            data-testid="select-toss-choice"
+                          >
+                            <option value="">Select</option>
+                            <option value="bat">Bat</option>
+                            <option value="bowl">Bowl</option>
+                          </select>
+                        </div>
+                        <Button
+                          type="button"
+                          className="w-full tap pressable"
+                          disabled={!isAdmin || state.setupCompleted}
+                          onClick={applyToss}
+                          data-testid="button-apply-toss"
+                        >
+                          Apply Toss
+                        </Button>
+                      </div>
+                      <div
+                        className="mt-3 rounded-xl border bg-card/40 px-3 py-2 text-sm"
+                        data-testid="text-toss-summary"
+                      >
+                        {state.tossWinner
+                          ? `Toss: ${state.teams[state.tossWinner].name} won${
+                              state.tossChoice ? ` and chose to ${state.tossChoice}` : ""
+                            }`
+                          : "No toss recorded"}
+                      </div>
+                    </Card>
                   </div>
+
+                  <Button
+                    className="mt-4 w-full"
+                    disabled={!isAdmin || state.setupCompleted}
+                    onClick={confirmMatchSetup}
+                    data-testid="button-confirm-match-details"
+                  >
+                    Confirm Match Details
+                  </Button>
                 </TabsContent>
               </Tabs>
             </Card>
