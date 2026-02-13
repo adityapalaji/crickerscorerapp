@@ -3875,40 +3875,323 @@ function TraditionalScoreboardCard({
   inningsA: Innings | null;
   inningsB: Innings | null;
 }) {
-  const aNet = computeInningsNet(inningsA);
-  const bNet = computeInningsNet(inningsB);
+  // Determine the "active" innings for the traditional view.
+  // If inningsB exists and has started, show it; otherwise show inningsA.
+  const activeInnings: Innings | null =
+    inningsB && ((inningsB.deliveries ?? 0) > 0 || (inningsB.balls ?? 0) > 0)
+      ? inningsB
+      : inningsA;
 
-  const aGross = inningsA?.runs ?? 0;
-  const bGross = inningsB?.runs ?? 0;
-  const aOuts = inningsA?.wickets ?? 0;
-  const bOuts = inningsB?.wickets ?? 0;
+  const battingTeamName = activeInnings
+    ? activeInnings.battingTeamId === "a"
+      ? teamAName
+      : teamBName
+    : teamAName;
 
-  const aOvers = formatOvers(inningsA?.balls ?? 0);
-  const bOvers = formatOvers(inningsB?.balls ?? 0);
+  const totalRuns = activeInnings?.runs ?? 0;
+  const totalOuts = activeInnings?.wickets ?? 0;
+  const totalOvers = formatOvers(activeInnings?.balls ?? 0);
+
+  const extras = activeInnings?.extras ?? { wide: 0, noball: 0, bye: 0, legbye: 0 };
+  const extrasTotal =
+    (extras.wide ?? 0) +
+    (extras.noball ?? 0) +
+    (extras.bye ?? 0) +
+    (extras.legbye ?? 0);
+
+  type BowlerStat = { name: string; balls: number; runs: number; wickets: number };
+
+  // Build per-batter stats from ball events.
+  // NOTE: This is a pragmatic model given current state shape:
+  // - Batter identity is inferred from striker/nonStriker and strike rotation.
+  // - We credit runs only for normal run events (not extras).
+  // - Balls faced increment only for legal deliveries (countsBall = true).
+  // - A wicket increments "outs" for the striker at that moment.
+  type BatterStat = {
+    name: string;
+    runs: number;
+    balls: number;
+    outs: number;
+    skin: number | null;
+  };
+
+  const computeBattingCard = (inn: Innings | null): BatterStat[] => {
+    if (!inn) return [];
+
+    const stats = new Map<string, BatterStat>();
+    const ensure = (name: string) => {
+      const key = String(name || "").trim();
+      if (!key) return null;
+      if (!stats.has(key))
+        stats.set(key, { name: key, runs: 0, balls: 0, outs: 0, skin: null });
+      return stats.get(key)!;
+    };
+
+    // Seed current pair so they appear even before any deliveries.
+    ensure(inn.striker);
+    ensure(inn.nonStriker);
+
+    let striker = String(inn.striker ?? "");
+    let nonStriker = String(inn.nonStriker ?? "");
+
+    const events = (inn.allBalls ?? []) as any[];
+
+    // Track the number of LEGAL deliveries seen so far in this innings.
+    // Skin = floor(legalBallIndex / 24) + 1 (skin length is 24 legal balls).
+    let legalBallIndex = 0;
+
+    for (const ev of events) {
+      const type = ev?.type as string;
+      const runs = Number(ev?.runs ?? 0);
+      const countsBall = Boolean(ev?.countsBall);
+      const isWicket = Boolean(ev?.isWicket) || type === "wicket";
+
+      // Non-ball events (like substitutions) shouldn't affect skin/balls/runs.
+      if (!countsBall && !isWicket && type !== "run" && type !== "dot") {
+        continue;
+      }
+
+      // If we don't have a striker yet, we can't attribute reliably.
+      if (!striker) {
+        striker = String(inn.striker ?? "");
+        nonStriker = String(inn.nonStriker ?? "");
+      }
+
+      const s = ensure(striker);
+      if (!s) {
+        if (countsBall) legalBallIndex += 1;
+        continue;
+      }
+
+      // Skin tag: infer from the innings legal ball index (0-23 => Skin 1, 24-47 => Skin 2, etc.)
+      if (countsBall) {
+        const skin = Math.floor(legalBallIndex / 24) + 1;
+        if (s.skin == null) s.skin = skin;
+      }
+
+      // Balls faced: legal deliveries only
+      if (countsBall) s.balls += 1;
+
+      // Runs: only credit normal run events
+      if (type === "run") {
+        s.runs += runs;
+        // Swap strike on odd runs
+        if (runs % 2 === 1) {
+          const tmp = striker;
+          striker = nonStriker;
+          nonStriker = tmp;
+        }
+      }
+
+      if (isWicket) {
+        s.outs += 1;
+      }
+
+      if (countsBall) legalBallIndex += 1;
+    }
+
+    const currentPair = [
+      String(inn.striker ?? "").trim(),
+      String(inn.nonStriker ?? "").trim(),
+    ].filter(Boolean);
+    const all = Array.from(stats.values());
+
+    const inPair = new Set(currentPair);
+    const pairRows = all.filter((b) => inPair.has(b.name));
+    const rest = all.filter((b) => !inPair.has(b.name));
+
+    rest.sort((a, b) => {
+      if ((a.skin ?? 99) !== (b.skin ?? 99)) return (a.skin ?? 99) - (b.skin ?? 99);
+      if (b.runs !== a.runs) return b.runs - a.runs;
+      if (b.balls !== a.balls) return b.balls - a.balls;
+      return a.name.localeCompare(b.name);
+    });
+
+    return [...pairRows, ...rest];
+  };
+
+  const batters = computeBattingCard(activeInnings);
+
+  const computeBowlingCard = (inn: Innings | null): BowlerStat[] => {
+    if (!inn) return [];
+
+    const stats = new Map<string, BowlerStat>();
+    const ensure = (name: string) => {
+      const key = String(name || "").trim();
+      if (!key) return null;
+      if (!stats.has(key)) stats.set(key, { name: key, balls: 0, runs: 0, wickets: 0 });
+      return stats.get(key)!;
+    };
+
+    // Build a stable guess for which bowler delivered each event.
+    // We only have `inn.bowler` (current over) and `inn.lastOverBowler` (previous over),
+    // so infer by walking events and switching bowler every 6 legal balls.
+    let currentBowler = String(inn.lastOverBowler ?? inn.bowler ?? "");
+    let legalInCurrentOver = 0;
+
+    const events = (inn.allBalls ?? []) as any[];
+    for (const ev of events) {
+      const type = String(ev?.type ?? "");
+      const runs = Number(ev?.runs ?? 0);
+      const countsBall = Boolean(ev?.countsBall);
+      const isWicket = Boolean(ev?.isWicket) || type === "wicket";
+
+      // Ignore non-delivery meta events.
+      if (!countsBall && type !== "wide" && type !== "noball" && type !== "bye" && type !== "legbye") {
+        continue;
+      }
+
+      // Ensure we have a bowler bucket.
+      const b = ensure(currentBowler);
+      if (!b) {
+        // If bowler missing, we can’t attribute; still advance over ball counter if legal.
+        if (countsBall) {
+          legalInCurrentOver += 1;
+          if (legalInCurrentOver === 6) legalInCurrentOver = 0;
+        }
+        continue;
+      }
+
+      // Runs off the ball (including extras) are charged to the bowler in this simplified model.
+      b.runs += runs;
+      if (isWicket) b.wickets += 1;
+
+      if (countsBall) {
+        b.balls += 1;
+        legalInCurrentOver += 1;
+        if (legalInCurrentOver === 6) {
+          legalInCurrentOver = 0;
+          // Move to next over. Best effort: keep using `inn.bowler` for the current/next over if set;
+          // otherwise keep the last known bowler.
+          currentBowler = String(inn.bowler ?? currentBowler);
+        }
+      }
+    }
+
+    // Merge in bowler ball counts from the authoritative map (legal balls only).
+    // This keeps overs correct even if inference missed some.
+    for (const [bowlerName, balls] of Object.entries(inn.bowlerBalls ?? {})) {
+      const b = ensure(bowlerName);
+      if (!b) continue;
+      b.balls = Math.max(b.balls, Number(balls ?? 0));
+    }
+
+    const rows = Array.from(stats.values()).filter(
+      (r) => (r.balls ?? 0) > 0 || (r.runs ?? 0) > 0 || (r.wickets ?? 0) > 0,
+    );
+
+    // Sort by wickets desc, then runs asc, then name.
+    rows.sort((a, b) => {
+      if (b.wickets !== a.wickets) return b.wickets - a.wickets;
+      if (a.runs !== b.runs) return a.runs - b.runs;
+      return a.name.localeCompare(b.name);
+    });
+
+    return rows;
+  };
+
+  const bowlers = computeBowlingCard(activeInnings);
 
   return (
     <Card className="glass p-4 sm:p-6">
-      <p className="text-sm font-semibold mb-3">Traditional Scoreboard</p>
-
-      <div className="grid grid-cols-4 text-sm font-semibold border-b pb-2">
-        <div>Team</div>
-        <div className="text-center">Net</div>
-        <div className="text-center">Gross</div>
-        <div className="text-center">Overs</div>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold">{battingTeamName}</p>
+        </div>
+        <div className="text-right">
+          <p className="text-2xl font-display leading-none">
+            {totalRuns}/{totalOuts}{" "}
+            <span className="text-sm font-medium">({totalOvers} Ov)</span>
+          </p>
+        </div>
       </div>
 
-      <div className="grid grid-cols-4 text-sm py-2 border-b">
-        <div className="font-medium">{teamAName}</div>
-        <div className="text-center">{aNet}</div>
-        <div className="text-center">{aGross}/{aOuts}</div>
-        <div className="text-center">{aOvers}</div>
-      </div>
+      <div className="mt-4">
+        {/* Batters */}
+        <div className="grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 text-xs font-semibold text-muted-foreground border-b pb-2">
+          <div>Batters</div>
+          <div className="text-right">R</div>
+          <div className="text-right">B</div>
+          <div className="text-right">Outs</div>
+        </div>
 
-      <div className="grid grid-cols-4 text-sm py-2">
-        <div className="font-medium">{teamBName}</div>
-        <div className="text-center">{bNet}</div>
-        <div className="text-center">{bGross}/{bOuts}</div>
-        <div className="text-center">{bOvers}</div>
+        {batters.length ? (
+          <div className="divide-y">
+            {batters.map((b) => (
+              <div
+                key={b.name}
+                className="grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 py-3 text-sm"
+              >
+                <div className="min-w-0">
+                  <div className="font-medium truncate" title={b.name}>
+                    {b.name}
+                  </div>
+                  {b.skin ? (
+                    <div className="text-xs text-muted-foreground">Skin {b.skin}</div>
+                  ) : null}
+                </div>
+                <div className="text-right tabular-nums">{b.runs}</div>
+                <div className="text-right tabular-nums">{b.balls}</div>
+                <div className="text-right tabular-nums">{b.outs}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">No batting data yet.</p>
+        )}
+
+        {/* Bottom summary like screenshot */}
+        <div className="mt-3 border-t pt-3 space-y-2 text-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">Extras</span>
+            <span className="tabular-nums">
+              {extrasTotal}{" "}
+              <span className="text-muted-foreground">
+                (wd {extras.wide ?? 0}, nb {extras.noball ?? 0}, b {extras.bye ?? 0}, lb {extras.legbye ?? 0})
+              </span>
+            </span>
+          </div>
+          <div className="flex items-center justify-between font-medium">
+            <span>Total</span>
+            <span className="tabular-nums">
+              {totalRuns}/{totalOuts} <span className="text-muted-foreground">({totalOvers} Ov)</span>
+            </span>
+          </div>
+        </div>
+
+        {/* Bowlers */}
+        <div className="mt-6">
+          <p className="text-sm font-semibold">Bowlers</p>
+
+          <div className="mt-2 grid grid-cols-[1fr,3rem,3rem,3rem] gap-2 text-xs font-semibold text-muted-foreground border-b pb-2">
+            <div>Bowler</div>
+            <div className="text-right">O</div>
+            <div className="text-right">R</div>
+            <div className="text-right">W</div>
+          </div>
+
+          {bowlers.length ? (
+            <div className="divide-y">
+              {bowlers.map((b) => (
+                <div
+                  key={b.name}
+                  className="grid grid-cols-[1fr,3rem,3rem,3rem] gap-2 py-3 text-sm"
+                >
+                  <div className="font-medium truncate" title={b.name}>
+                    {b.name}
+                  </div>
+                  <div className="text-right tabular-nums">
+                    {formatOvers(b.balls ?? 0, 999)}
+                  </div>
+                  <div className="text-right tabular-nums">{b.runs}</div>
+                  <div className="text-right tabular-nums">{b.wickets}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-muted-foreground">No bowling data yet.</p>
+          )}
+        </div>
       </div>
     </Card>
   );
