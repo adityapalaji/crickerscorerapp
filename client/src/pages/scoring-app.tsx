@@ -1716,7 +1716,7 @@ function ScoringApp() {
   // If your component uses a different state setter name, replace `setState`/`safeSet` with
   // the correct one (e.g. `setMatchState`, `setAppState`, etc.).
   // --- ADD / REPLACE inside ScoringApp component ---
-  // 1) Merge wicket into the last extra of the given type (used by the inline W on extra cards)
+  // 1) Merge wicket into the last extra of `type` (used by the inline W on extra cards)
   // inside ScoringApp: merge wicket into last extra (no appends)
   function addWicketOnExtra(type: "wide" | "noball" | "bye" | "legbye") {
     if (wicketLockRef.current) return;
@@ -4039,174 +4039,115 @@ function TraditionalScoreboardCard({
   inningsA: Innings | null;
   inningsB: Innings | null;
 }) {
-  // Determine the "active" innings for the traditional view.
-  // If inningsB exists and has started, show it; otherwise show inningsA.
+  // Active innings should be driven by match state, not by whether the 2nd innings has "started".
+  // This keeps the 1st innings scorecard always accessible after innings switch.
   const activeInnings: Innings | null =
-    inningsB && ((inningsB.deliveries ?? 0) > 0 || (inningsB.balls ?? 0) > 0)
-      ? inningsB
-      : inningsA;
+    state.inningsIndex >= 1
+      ? state.innings?.[state.inningsIndex] ?? inningsB ?? inningsA
+      : state.innings?.[0] ?? inningsA ?? inningsB;
 
-  const battingTeamName = activeInnings
-    ? activeInnings.battingTeamId === "a"
-      ? teamAName
-      : teamBName
-    : teamAName;
+  const previousInnings: Innings | null =
+    state.inningsIndex >= 1
+      ? state.innings?.[state.inningsIndex - 1] ?? inningsA
+      : null;
 
-  const innNet = computeInningsNet(activeInnings);
+  const [showPreviousInnings, setShowPreviousInnings] = useState(false);
 
-  const totalRuns = activeInnings?.runs ?? 0;
-  const totalOuts = activeInnings?.wickets ?? 0;
-  const totalOvers = formatOvers(activeInnings?.balls ?? 0);
-
-  const extras = activeInnings?.extras ?? {
-    wide: 0,
-    noball: 0,
-    bye: 0,
-    legbye: 0,
+  const teamNameForInnings = (inn: Innings | null) => {
+    if (!inn) return "—";
+    return inn.battingTeamId === "a" ? teamAName : teamBName;
   };
-  const extrasTotal =
-    (extras.wide ?? 0) +
-    (extras.noball ?? 0) +
-    (extras.bye ?? 0) +
-    (extras.legbye ?? 0);
 
-  // Hooks must run before any nested function declarations.
-  const [showFullScoreboard, setShowFullScoreboard] = useState(false);
+  const renderInningsScorecard = (inn: Innings | null) => {
+    if (!inn) return null;
 
-  const activeBatterIds = useMemo(() => {
-    const s = String(activeInnings?.striker ?? "").trim();
-    const ns = String(activeInnings?.nonStriker ?? "").trim();
-    return new Set([s, ns].filter(Boolean));
-  }, [activeInnings?.striker, activeInnings?.nonStriker]);
+    const battingTeamName = teamNameForInnings(inn);
+    const innNet = computeInningsNet(inn);
 
-  const currentBowlerId = useMemo(
-    () => String(activeInnings?.bowler ?? "").trim(),
-    [activeInnings?.bowler],
-  );
+    const totalOuts = inn.wickets ?? 0;
+    const totalOvers = formatOvers(inn.balls ?? 0, state.oversLimit);
 
-  type BowlerStat = { name: string; balls: number; runs: number; wickets: number };
-
-  const computeBowlingCard = (inn: Innings | null): BowlerStat[] => {
-    if (!inn) return [];
-
-    const stats = new Map<string, BowlerStat>();
-    const ensure = (name: string) => {
-      const key = String(name || "").trim();
-      if (!key) return null;
-      if (!stats.has(key))
-        stats.set(key, { name: key, balls: 0, runs: 0, wickets: 0 });
-      return stats.get(key)!;
+    const extras = inn.extras ?? {
+      wide: 0,
+      noball: 0,
+      bye: 0,
+      legbye: 0,
     };
+    const extrasTotal =
+      (extras.wide ?? 0) +
+      (extras.noball ?? 0) +
+      (extras.bye ?? 0) +
+      (extras.legbye ?? 0);
 
-    for (const ev of (inn.allBalls ?? []) as BallEvent[]) {
-      const type = String(ev.type);
-      const isExtra =
-        type === "wide" ||
-        type === "noball" ||
-        type === "bye" ||
-        type === "legbye";
-      const isDeliveryLike =
-        Boolean(ev.countsBall) ||
-        type === "wicket" ||
-        type === "run" ||
-        type === "dot" ||
-        isExtra;
-      if (!isDeliveryLike) continue;
-
-      const bowler = String(ev.bowlerAtEvent ?? "").trim();
-      const s = ensure(bowler);
-      if (!s) continue;
-
-      s.runs += Number(ev.runs ?? 0);
-      if (ev.isWicket || type === "wicket") s.wickets += 1;
-      if (ev.countsBall) s.balls += 1;
-    }
-
-    ensure(inn.bowler);
-
-    const all = Array.from(stats.values());
-    all.sort((a, b) => {
-      const cur = String(inn.bowler ?? "").trim();
-      if (a.name === cur && b.name !== cur) return -1;
-      if (b.name === cur && a.name !== cur) return 1;
-      if (b.wickets !== a.wickets) return b.wickets - a.wickets;
-      if (a.runs !== b.runs) return a.runs - b.runs;
-      if (b.balls !== a.balls) return b.balls - a.balls;
-      return a.name.localeCompare(b.name);
-    });
-
-    return all;
-  };
-
-  const batters = computeBattingCard(activeInnings);
-
-  const battersWithPenalty = useMemo(() => {
-    return (batters ?? []).map((b) => ({
+    const batters = computeBattingCard(inn);
+    const visibleBatters = (batters ?? []).map((b) => ({
       ...b,
+      // Real score shown on batter card: runs - (5 * outs)
       runs: Number(b.runs ?? 0) - Number(b.outs ?? 0) * WICKET_PENALTY,
     }));
-  }, [batters]);
 
-  const visibleBatters = useMemo(() => {
-    if (showFullScoreboard) return battersWithPenalty;
-    return (battersWithPenalty ?? []).filter((b) => activeBatterIds.has(b.name));
-  }, [battersWithPenalty, activeBatterIds, showFullScoreboard]);
+    type BowlerStat = { name: string; balls: number; runs: number; wickets: number };
 
-  const bowlers = useMemo(
-    () => computeBowlingCard(activeInnings),
-    [activeInnings?.allBalls, activeInnings?.bowler],
-  );
+    const computeBowlingCard = (inn2: Innings | null): BowlerStat[] => {
+      if (!inn2) return [];
 
-  const visibleBowlers = useMemo(() => {
-    if (showFullScoreboard) return bowlers;
-    if (!currentBowlerId) return [];
-    return (bowlers ?? []).filter((b) => b.name === currentBowlerId);
-  }, [bowlers, currentBowlerId, showFullScoreboard]);
+      const stats = new Map<string, BowlerStat>();
+      const ensure = (name: string) => {
+        const key = String(name || "").trim();
+        if (!key) return null;
+        if (!stats.has(key)) stats.set(key, { name: key, balls: 0, runs: 0, wickets: 0 });
+        return stats.get(key)!;
+      };
 
-  // Remove duplicate scoreboard state/memos (the ones below the already-computed visibleBowlers)
+      for (const ev of (inn2.allBalls ?? []) as BallEvent[]) {
+        const type = String(ev.type);
+        const isExtra = type === "wide" || type === "noball" || type === "bye" || type === "legbye";
+        const isDeliveryLike =
+          Boolean(ev.countsBall) || type === "wicket" || type === "run" || type === "dot" || isExtra;
+        if (!isDeliveryLike) continue;
 
-  return (
-    <Card className="glass p-4 sm:p-6">
-      {/* Section title */}
-      <div className="mb-3">
-        <div className="text-xs font-semibold tracking-widest text-muted-foreground">
-          SCOREBOARD
-        </div>
-      </div>
+        const bowler = String(ev.bowlerAtEvent ?? "").trim();
+        const s = ensure(bowler);
+        if (!s) continue;
 
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-semibold truncate">{battingTeamName}</p>
-        </div>
-        <div className="text-right">
-          <div className="flex items-baseline justify-end gap-2">
-            <span className="text-xs font-semibold tracking-wide text-muted-foreground">
-              NET
-            </span>
-            <span className="text-2xl font-display leading-none tabular-nums">
-              {innNet}/{totalOuts}
-            </span>
-            <span className="text-sm font-medium text-muted-foreground tabular-nums">
-              ({totalOvers} Ov)
-            </span>
+        s.runs += Number(ev.runs ?? 0);
+        if (ev.isWicket || type === "wicket") s.wickets += 1;
+        if (ev.countsBall) s.balls += 1;
+      }
+
+      ensure(inn2.bowler);
+
+      const all = Array.from(stats.values());
+      all.sort((a, b) => {
+        if (b.wickets !== a.wickets) return b.wickets - a.wickets;
+        if (a.runs !== b.runs) return a.runs - b.runs;
+        return a.name.localeCompare(b.name);
+      });
+
+      return all;
+    };
+
+    const bowlers = computeBowlingCard(inn);
+
+    return (
+      <div className="mt-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold truncate">{battingTeamName}</p>
+          </div>
+          <div className="text-right">
+            <div className="flex items-baseline justify-end gap-2">
+              <span className="text-xs font-semibold tracking-wide text-muted-foreground">NET</span>
+              <span className="text-2xl font-display leading-none tabular-nums">
+                {innNet}/{totalOuts}
+              </span>
+              <span className="text-sm font-medium text-muted-foreground tabular-nums">({totalOvers} Ov)</span>
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Expand / Collapse control */}
-      <div className="mt-3 flex justify-end">
-        <Button
-          variant="ghost"
-          className="h-8 px-2 text-xs"
-          onClick={() => setShowFullScoreboard((v) => !v)}
-        >
-          {showFullScoreboard ? "Hide Completed Players ▲" : "Show Full Scoreboard ▼"}
-        </Button>
-      </div>
-
-      <div className="mt-3">
         {/* Batters */}
-        <div className="grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 text-xs font-semibold text-muted-foreground border-b pb-2">
+        <div className="mt-3 grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 text-xs font-semibold text-muted-foreground border-b pb-2">
           <div>Batters</div>
           <div className="text-right">R</div>
           <div className="text-right">B</div>
@@ -4216,17 +4157,14 @@ function TraditionalScoreboardCard({
         {visibleBatters.length ? (
           <div className="divide-y">
             {visibleBatters.map((b) => (
-              <div
-                key={b.name}
-                className="grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 py-3 text-sm"
-              >
+              <div key={b.name} className="grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 py-3 text-sm">
                 <div className="min-w-0">
                   <div className="font-medium truncate" title={b.name}>
                     {b.name}
                   </div>
                   {b.skin ? (
                     <div className="mt-1">
-                      <span className="inline-flex items-center rounded-md border bg-muted/20 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                     <span className="inline-flex items-center rounded-md border bg-muted/20 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
                         Skin {b.skin}
                       </span>
                     </div>
@@ -4239,9 +4177,7 @@ function TraditionalScoreboardCard({
             ))}
           </div>
         ) : (
-          <p className="mt-3 text-sm text-muted-foreground">
-            No batting data yet.
-          </p>
+          <p className="mt-3 text-sm text-muted-foreground">No batting data yet.</p>
         )}
 
         {/* Bottom summary */}
@@ -4258,8 +4194,7 @@ function TraditionalScoreboardCard({
           <div className="flex items-center justify-between font-medium">
             <span>Total</span>
             <span className="tabular-nums">
-              {innNet}/{totalOuts}{" "}
-              <span className="text-muted-foreground">({totalOvers} Ov)</span>
+              {innNet}/{totalOuts} <span className="text-muted-foreground">({totalOvers} Ov)</span>
             </span>
           </div>
         </div>
@@ -4275,34 +4210,61 @@ function TraditionalScoreboardCard({
             <div className="text-right">W</div>
           </div>
 
-          {visibleBowlers.length ? (
+          {bowlers.length ? (
             <div className="divide-y">
-              {visibleBowlers.map((b) => (
-                <div
-                  key={b.name}
-                  className="grid grid-cols-[1fr,3rem,3rem,3rem] gap-2 py-3 text-sm"
-                >
+              {bowlers.map((b) => (
+                <div key={b.name} className="grid grid-cols-[1fr,3rem,3rem,3rem] gap-2 py-3 text-sm">
                   <div className="font-medium truncate" title={b.name}>
                     {b.name}
                   </div>
-                  <div className="text-right tabular-nums">
-                    {formatOvers(b.balls ?? 0, 999)}
-                  </div>
+                  <div className="text-right tabular-nums">{formatOvers(b.balls ?? 0, 999)}</div>
                   <div className="text-right tabular-nums">{b.runs}</div>
                   <div className="text-right tabular-nums">{b.wickets}</div>
                 </div>
               ))}
             </div>
           ) : (
-            <p className="mt-3 text-sm text-muted-foreground">
-              No bowling data yet.
-            </p>
+            <p className="mt-3 text-sm text-muted-foreground">No bowling data yet.</p>
           )}
         </div>
       </div>
+    );
+  };
+
+  return (
+    <Card className="glass p-4 sm:p-6">
+      <div className="mb-3">
+        <div className="text-xs font-semibold tracking-widest text-muted-foreground">SCOREBOARD</div>
+      </div>
+
+      {/* Current innings always visible */}
+      {renderInningsScorecard(activeInnings)}
+
+      {/* Previous innings collapsible */}
+      {previousInnings ? (
+        <div className="mt-4">
+          <div className="flex justify-end">
+            <Button
+              variant="ghost"
+              className="h-8 px-2 text-xs"
+              onClick={() => setShowPreviousInnings((v) => !v)}
+            >
+              {showPreviousInnings ? "Hide 1st Innings Scorecard ▲" : "View 1st Innings Scorecard ▼"}
+            </Button>
+          </div>
+
+          {showPreviousInnings ? (
+            <div className="mt-2 rounded-xl border bg-card/40 p-3">
+              {renderInningsScorecard(previousInnings)}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </Card>
   );
 }
+
+// ...existing code...
 
 export default dynamic(() => Promise.resolve(ScoringApp), { ssr: false });
 
