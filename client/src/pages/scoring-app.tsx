@@ -3551,9 +3551,13 @@ function ScoringApp() {
                     aCompleted &&
                     bCompleted
                   ) {
-                    if (aNet > bNet) winner = state.teams.a.name;
-                    else if (bNet > aNet) winner = state.teams.b.name;
-                    else winner = "Tie";
+                    if (aNet > bNet) {
+                      winner = state.teams.a.name;
+                    } else if (bNet > aNet) {
+                      winner = state.teams.b.name;
+                    } else {
+                      winner = "Tie";
+                    }
                   }
 
                   // helper to read finishing pair (if any) for an innings' completed skin
@@ -3923,6 +3927,7 @@ function Field({
 }
 
 function TraditionalScoreboardCard({
+  state,
   teamAName,
   teamBName,
   inningsA,
@@ -4050,6 +4055,18 @@ function TraditionalScoreboardCard({
 
   const batters = computeBattingCard(activeInnings);
 
+  // Apply skins wicket penalty to individual batter runs (UI-only) so it matches the net scoring rule.
+  // Team totals already apply wicket penalties separately; this is just to make the batting card intuitive.
+  const battersWithSkinsPenalty = useMemo(() => {
+    const display = String(state?.scoreboardDisplay ?? "");
+    if (display !== "skins") return batters;
+
+    return (batters ?? []).map((b) => ({
+      ...b,
+      runs: Number(b.runs ?? 0) - Number(b.outs ?? 0) * 5,
+    }));
+  }, [batters, state?.scoreboardDisplay]);
+
   const computeBowlingCard = (inn: Innings | null): BowlerStat[] => {
     if (!inn) return [];
 
@@ -4133,7 +4150,7 @@ function TraditionalScoreboardCard({
 
         {batters.length ? (
           <div className="divide-y">
-            {batters.map((b) => (
+            {(battersWithSkinsPenalty ?? batters).map((b) => (
               <div
                 key={b.name}
                 className="grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 py-3 text-sm"
