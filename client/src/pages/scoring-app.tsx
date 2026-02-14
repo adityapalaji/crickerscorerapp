@@ -146,6 +146,61 @@ const TOTAL_SKINS = 4;
 
 const WICKET_PENALTY = 5;
 
+type BatterStat = { name: string; runs: number; balls: number; outs: number; skin?: number };
+
+function computeBattingCard(inn: Innings | null): BatterStat[] {
+  if (!inn) return [];
+
+  const stats = new Map<string, BatterStat>();
+  const ensure = (name: string) => {
+    const key = String(name || "").trim();
+    if (!key) return null;
+    if (!stats.has(key)) stats.set(key, { name: key, runs: 0, balls: 0, outs: 0 });
+    return stats.get(key)!;
+  };
+
+  for (const ev of (inn.allBalls ?? []) as BallEvent[]) {
+    const striker = String(ev.strikerAtEvent ?? "").trim();
+    const s = ensure(striker);
+    if (!s) continue;
+
+    // Batter runs are already tracked on the event (extras -> 0)
+    s.runs += Number(ev.batterRuns ?? 0);
+
+    // Balls faced: only legal deliveries are faced
+    if (ev.countsBall) s.balls += 1;
+
+    // Outs: attribute to striker for now (good enough for this app's model)
+    if (ev.isWicket || ev.type === "wicket") s.outs += 1;
+
+    // Rough skin attribution by legal ball index (24 balls per skin)
+    if (s.skin == null && ev.countsBall) {
+      const legalIndex = Math.max(0, (inn.balls ?? 0) - 1);
+      s.skin = Math.floor(legalIndex / 24) + 1;
+    }
+  }
+
+  // Ensure currently selected batters show even before any events
+  ensure(inn.striker);
+  ensure(inn.nonStriker);
+
+  const all = Array.from(stats.values());
+  all.sort((a, b) => {
+    const aActive = a.name === inn.striker || a.name === inn.nonStriker;
+    const bActive = b.name === inn.striker || b.name === inn.nonStriker;
+    if (aActive && !bActive) return -1;
+    if (bActive && !aActive) return 1;
+
+    // Sort by runs desc, outs asc, balls desc
+    if (b.runs !== a.runs) return b.runs - a.runs;
+    if (a.outs !== b.outs) return a.outs - b.outs;
+    if (b.balls !== a.balls) return b.balls - a.balls;
+    return a.name.localeCompare(b.name);
+  });
+
+  return all;
+}
+
 function computeInningsNet(inn?: Innings | null): number {
   if (!inn) return 0;
   const wickets = typeof inn.wickets === "number" ? inn.wickets : 0;
@@ -3958,114 +4013,33 @@ function TraditionalScoreboardCard({
   const totalOuts = activeInnings?.wickets ?? 0;
   const totalOvers = formatOvers(activeInnings?.balls ?? 0);
 
-  const extras = activeInnings?.extras ?? { wide: 0, noball: 0, bye: 0, legbye: 0 };
+  const extras = activeInnings?.extras ?? {
+    wide: 0,
+    noball: 0,
+    bye: 0,
+    legbye: 0,
+  };
   const extrasTotal =
     (extras.wide ?? 0) +
     (extras.noball ?? 0) +
     (extras.bye ?? 0) +
     (extras.legbye ?? 0);
 
+  // Hooks must run before any nested function declarations.
+  const [showFullScoreboard, setShowFullScoreboard] = useState(false);
+
+  const activeBatterIds = useMemo(() => {
+    const s = String(activeInnings?.striker ?? "").trim();
+    const ns = String(activeInnings?.nonStriker ?? "").trim();
+    return new Set([s, ns].filter(Boolean));
+  }, [activeInnings?.striker, activeInnings?.nonStriker]);
+
+  const currentBowlerId = useMemo(
+    () => String(activeInnings?.bowler ?? "").trim(),
+    [activeInnings?.bowler],
+  );
+
   type BowlerStat = { name: string; balls: number; runs: number; wickets: number };
-
-  // Build per-batter stats from ball events.
-  // NOTE: This is a pragmatic model given current state shape:
-  // - Batter identity is inferred from striker/nonStriker and strike rotation.
-  // - We credit runs only for normal run events (not extras).
-  // - Balls faced increment only for legal deliveries (countsBall = true).
-  // - A wicket increments "outs" for the striker at that moment.
-  type BatterStat = {
-    name: string;
-    runs: number;
-    balls: number;
-    outs: number;
-    skin: number | null;
-  };
-
-  const computeBattingCard = (inn: Innings | null): BatterStat[] => {
-    if (!inn) return [];
-
-    const stats = new Map<string, BatterStat>();
-    const ensure = (name: string, skin: number | null) => {
-      const key = String(name || "").trim();
-      if (!key) return null;
-      if (!stats.has(key))
-        stats.set(key, { name: key, runs: 0, balls: 0, outs: 0, skin });
-      return stats.get(key)!;
-    };
-
-    const events = (inn.allBalls ?? []) as BallEvent[];
-
-    let legalBallIndex = 0;
-    for (const ev of events) {
-      const countsBall = Boolean(ev.countsBall);
-      const type = String(ev.type);
-
-      // Ignore non-delivery meta events if any exist
-      const isExtra =
-        type === "wide" ||
-        type === "noball" ||
-        type === "bye" ||
-        type === "legbye";
-      const isDeliveryLike =
-        countsBall || type === "wicket" || type === "run" || type === "dot" || isExtra;
-      if (!isDeliveryLike) continue;
-
-      const skin = countsBall ? Math.floor(legalBallIndex / 24) + 1 : null;
-
-      const batter = String(ev.strikerAtEvent ?? "").trim();
-      const s = ensure(batter, skin);
-      if (s) {
-        // balls faced: legal deliveries only
-        if (countsBall) s.balls += 1;
-
-        // runs credited to batter: only batterRuns
-        s.runs += Number(ev.batterRuns ?? 0);
-
-        // striker out
-        if (ev.isWicket || type === "wicket") s.outs += 1;
-      }
-
-      if (countsBall) legalBallIndex += 1;
-    }
-
-    // Seed current pair so they appear even with 0.
-    ensure(inn.striker, null);
-    ensure(inn.nonStriker, null);
-
-    const currentPair = [
-      String(inn.striker ?? "").trim(),
-      String(inn.nonStriker ?? "").trim(),
-    ].filter(Boolean);
-
-    const all = Array.from(stats.values());
-
-    const inPair = new Set(currentPair);
-    const pairRows = all.filter((b) => inPair.has(b.name));
-    const rest = all.filter((b) => !inPair.has(b.name));
-
-    rest.sort((a, b) => {
-      if ((a.skin ?? 99) !== (b.skin ?? 99)) return (a.skin ?? 99) - (b.skin ?? 99);
-      if (b.runs !== a.runs) return b.runs - a.runs;
-      if (b.balls !== a.balls) return b.balls - a.balls;
-      return a.name.localeCompare(b.name);
-    });
-
-    return [...pairRows, ...rest];
-  };
-
-  const batters = computeBattingCard(activeInnings);
-
-    // Apply skins wicket penalty to individual batter runs (UI-only) so it matches the net scoring rule.
-    // IMPORTANT: This should follow the match's scoring mode (skins), not the selected UI card.
-    const battersWithSkinsPenalty = useMemo(() => {
-    const isSkinsMode = (state?.scoreboardDisplay ?? "skins") === "skins";
-    if (!isSkinsMode) return batters;
-
-    return (batters ?? []).map((b) => ({
-      ...b,
-      runs: Number(b.runs ?? 0) - Number(b.outs ?? 0) * WICKET_PENALTY,
-    }));
-    }, [batters, state?.scoreboardDisplay]);
 
   const computeBowlingCard = (inn: Innings | null): BowlerStat[] => {
     if (!inn) return [];
@@ -4079,47 +4053,82 @@ function TraditionalScoreboardCard({
       return stats.get(key)!;
     };
 
-    const events = (inn.allBalls ?? []) as BallEvent[];
-
-    for (const ev of events) {
+    for (const ev of (inn.allBalls ?? []) as BallEvent[]) {
       const type = String(ev.type);
-      const countsBall = Boolean(ev.countsBall);
-
       const isExtra =
         type === "wide" ||
         type === "noball" ||
         type === "bye" ||
         type === "legbye";
       const isDeliveryLike =
-        countsBall || type === "wicket" || type === "run" || type === "dot" || isExtra;
+        Boolean(ev.countsBall) ||
+        type === "wicket" ||
+        type === "run" ||
+        type === "dot" ||
+        isExtra;
       if (!isDeliveryLike) continue;
 
       const bowler = String(ev.bowlerAtEvent ?? "").trim();
-      const b = ensure(bowler);
-      if (!b) continue;
+      const s = ensure(bowler);
+      if (!s) continue;
 
-      b.runs += Number(ev.runs ?? 0);
-      if (ev.isWicket || type === "wicket") b.wickets += 1;
-      if (countsBall) b.balls += 1;
+      s.runs += Number(ev.runs ?? 0);
+      if (ev.isWicket || type === "wicket") s.wickets += 1;
+      if (ev.countsBall) s.balls += 1;
     }
 
-    const rows = Array.from(stats.values()).filter(
-      (r) => (r.balls ?? 0) > 0 || (r.runs ?? 0) > 0 || (r.wickets ?? 0) > 0,
-    );
+    ensure(inn.bowler);
 
-    rows.sort((a, b) => {
+    const all = Array.from(stats.values());
+    all.sort((a, b) => {
+      const cur = String(inn.bowler ?? "").trim();
+      if (a.name === cur && b.name !== cur) return -1;
+      if (b.name === cur && a.name !== cur) return 1;
       if (b.wickets !== a.wickets) return b.wickets - a.wickets;
       if (a.runs !== b.runs) return a.runs - b.runs;
+      if (b.balls !== a.balls) return b.balls - a.balls;
       return a.name.localeCompare(b.name);
     });
 
-    return rows;
+    return all;
   };
 
-  const bowlers = computeBowlingCard(activeInnings);
+  const batters = computeBattingCard(activeInnings);
+
+  const battersWithPenalty = useMemo(() => {
+    return (batters ?? []).map((b) => ({
+      ...b,
+      runs: Number(b.runs ?? 0) - Number(b.outs ?? 0) * WICKET_PENALTY,
+    }));
+  }, [batters]);
+
+  const visibleBatters = useMemo(() => {
+    if (showFullScoreboard) return battersWithPenalty;
+    return (battersWithPenalty ?? []).filter((b) => activeBatterIds.has(b.name));
+  }, [battersWithPenalty, activeBatterIds, showFullScoreboard]);
+
+  const bowlers = useMemo(
+    () => computeBowlingCard(activeInnings),
+    [activeInnings?.allBalls, activeInnings?.bowler],
+  );
+
+  const visibleBowlers = useMemo(() => {
+    if (showFullScoreboard) return bowlers;
+    if (!currentBowlerId) return [];
+    return (bowlers ?? []).filter((b) => b.name === currentBowlerId);
+  }, [bowlers, currentBowlerId, showFullScoreboard]);
+
+  // Remove duplicate scoreboard state/memos (the ones below the already-computed visibleBowlers)
 
   return (
     <Card className="glass p-4 sm:p-6">
+      {/* Section title */}
+      <div className="mb-3">
+        <div className="text-xs font-semibold tracking-widest text-muted-foreground">
+          SCOREBOARD
+        </div>
+      </div>
+
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold truncate">{battingTeamName}</p>
@@ -4139,7 +4148,18 @@ function TraditionalScoreboardCard({
         </div>
       </div>
 
-      <div className="mt-4">
+      {/* Expand / Collapse control */}
+      <div className="mt-3 flex justify-end">
+        <Button
+          variant="ghost"
+          className="h-8 px-2 text-xs"
+          onClick={() => setShowFullScoreboard((v) => !v)}
+        >
+          {showFullScoreboard ? "Hide Completed Players ▲" : "Show Full Scoreboard ▼"}
+        </Button>
+      </div>
+
+      <div className="mt-3">
         {/* Batters */}
         <div className="grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 text-xs font-semibold text-muted-foreground border-b pb-2">
           <div>Batters</div>
@@ -4148,9 +4168,9 @@ function TraditionalScoreboardCard({
           <div className="text-right">Outs</div>
         </div>
 
-        {batters.length ? (
+        {visibleBatters.length ? (
           <div className="divide-y">
-            {(battersWithSkinsPenalty ?? batters).map((b) => (
+            {visibleBatters.map((b) => (
               <div
                 key={b.name}
                 className="grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 py-3 text-sm"
@@ -4174,10 +4194,12 @@ function TraditionalScoreboardCard({
             ))}
           </div>
         ) : (
-          <p className="mt-3 text-sm text-muted-foreground">No batting data yet.</p>
+          <p className="mt-3 text-sm text-muted-foreground">
+            No batting data yet.
+          </p>
         )}
 
-        {/* Bottom summary like screenshot */}
+        {/* Bottom summary */}
         <div className="mt-3 border-t pt-3 space-y-2 text-sm">
           <div className="flex items-center justify-between">
             <span className="text-muted-foreground">Extras</span>
@@ -4208,9 +4230,9 @@ function TraditionalScoreboardCard({
             <div className="text-right">W</div>
           </div>
 
-          {bowlers.length ? (
+          {visibleBowlers.length ? (
             <div className="divide-y">
-              {bowlers.map((b) => (
+              {visibleBowlers.map((b) => (
                 <div
                   key={b.name}
                   className="grid grid-cols-[1fr,3rem,3rem,3rem] gap-2 py-3 text-sm"
@@ -4227,7 +4249,9 @@ function TraditionalScoreboardCard({
               ))}
             </div>
           ) : (
-            <p className="mt-3 text-sm text-muted-foreground">No bowling data yet.</p>
+            <p className="mt-3 text-sm text-muted-foreground">
+              No bowling data yet.
+            </p>
           )}
         </div>
       </div>
