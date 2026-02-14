@@ -1,3 +1,298 @@
+</Tabs>
+
+<TabsContent value="players" className="mt-4">
+  {/* Manage roster button (visible to admins). Inserted above the player selects */}
+  <div className="flex items-center justify-end mb-3">
+    {isAdmin && teamObj ? (
+        <button
+            type="button"
+            className="inline-flex items-center px-4 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700"
+            onClick={() => setRosterOpen(true)}
+            title="Manage team roster"
+        >
+          Manage roster
+        </button>
+    ) : null}
+  </div>
+
+  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+    {/* Striker */}
+    <div className="space-y-2">
+      <Label>Striker</Label>
+      <select
+          className="h-11 w-full rounded-xl border bg-card/70 px-3"
+          value={currentInnings.striker}
+          disabled={
+              !isAdmin ||
+              !state.setupCompleted ||
+              isBatterSelectionLocked
+          }
+          onChange={(e) =>
+              setPlayers(
+                  e.target.value,
+                  currentInnings.nonStriker,
+                  currentInnings.bowler,
+              )
+          }
+      >
+        {/* Striker */}
+        {/* Striker */}
+        <option value="">Select striker</option>
+        {battingPlayers.map((playerKey) => {
+          const team =
+              state.teams?.[currentBattingTeamId ?? ""];
+          let label = String(playerKey);
+
+          if (team) {
+            const players = team.players;
+            if (Array.isArray(players)) {
+              // players array: label is the array item (likely a name or short id)
+              label = String(playerKey);
+            } else if (players && typeof players === "object") {
+              // players map: show name if present
+              const p = (players as Record<string, any>)[
+                  playerKey
+                  ];
+              label = p?.name ?? String(playerKey);
+            }
+          }
+
+          return (
+              <option
+                  key={playerKey}
+                  value={playerKey}
+                  disabled={
+                      playerKey === currentInnings.nonStriker
+                  }
+              >
+                {label}{" "}
+                {usedBatters.has(playerKey) ? "(used)" : ""}
+              </option>
+          );
+        })}
+      </select>
+    </div>
+
+    {/* Non-Striker */}
+    <div className="space-y-2">
+      <Label>Non-Striker</Label>
+      <select
+          className="h-11 w-full rounded-xl border bg-card/70 px-3"
+          value={currentInnings.nonStriker}
+          disabled={
+              !isAdmin ||
+              !state.setupCompleted ||
+              isBatterSelectionLocked
+          }
+          onChange={(e) =>
+              setPlayers(
+                  currentInnings.striker,
+                  e.target.value,
+                  currentInnings.bowler,
+              )
+          }
+      >
+        {/* Non-Striker */}
+        {/* Non-Striker */}
+        <option value="">Select non-striker</option>
+        {battingPlayers.map((playerKey) => {
+          const team =
+              state.teams?.[currentBattingTeamId ?? ""];
+          let label = String(playerKey);
+
+          if (team) {
+            const players = team.players;
+            if (Array.isArray(players)) {
+              label = String(playerKey);
+            } else if (players && typeof players === "object") {
+              const p = (players as Record<string, any>)[
+                  playerKey
+                  ];
+              label = p?.name ?? String(playerKey);
+            }
+          }
+
+          return (
+              <option
+                  key={playerKey}
+                  value={playerKey}
+                  disabled={
+                      playerKey === currentInnings.striker
+                  }
+              >
+                {label}{" "}
+                {usedBatters.has(playerKey) ? "(used)" : ""}
+              </option>
+          );
+        })}
+      </select>
+    </div>
+
+    {/* Bowler */}
+    <div className="space-y-2">
+      <Label>Bowler</Label>
+      <select
+          className="h-11 w-full rounded-xl border bg-card/70 px-3"
+          value={currentInnings.bowler}
+          disabled={
+              !isAdmin ||
+              !state.setupCompleted ||
+              isBowlerSelectionLocked
+          }
+          onChange={(e) => {
+            const value = e.target.value;
+            if (!value) return;
+
+            const inn = state.innings[state.inningsIndex];
+
+            // Safety: compute bowling players list for this innings
+            const bowlingPlayersList: string[] = bowlingPlayers;
+
+            // check immediate consecutive rule first (existing logic)
+            const isConsecutive =
+                isAtOverBreak && inn.lastOverBowler === value;
+
+            // check max overs (existing)
+            const balls = inn.bowlerBalls?.[value] ?? 0;
+            const overs = Math.floor(balls / 6);
+            const isMaxed = overs >= 2;
+
+            // New: feasibility check — prevent choices that make finishing impossible
+            const oversLimitVal = clamp(
+                state.oversLimit ?? 16,
+                1,
+                50,
+            );
+            const infeasible = !canCompleteRemainingOvers(
+                inn,
+                bowlingPlayersList,
+                value,
+                oversLimitVal,
+            );
+
+            if (isConsecutive) {
+              toast({
+                title: "Invalid bowler",
+                description:
+                    "Same bowler cannot bowl consecutive overs. Please select a different bowler.",
+                variant: "destructive",
+              });
+              return;
+            }
+
+            if (isMaxed) {
+              toast({
+                title: "Bowling limit reached",
+                description: `${value} has already bowled 2 overs.`,
+                variant: "destructive",
+              });
+              return;
+            }
+
+            if (infeasible) {
+              toast({
+                title: "Cannot pick bowler",
+                description:
+                    "Picking this bowler now would make it impossible to complete the remaining overs. Please select a different bowler.",
+                variant: "destructive",
+              });
+              return;
+            }
+
+            // proceed with existing setting behaviour
+            const updated: Innings = {
+              ...inn,
+              bowler: value,
+            };
+
+            const innings = [...state.innings];
+            innings[state.inningsIndex] = updated;
+            safeSet({ ...state, innings });
+          }}
+      >
+        {/* Bowler */}
+        {/* Bowler */}
+        <option value="">Select bowler</option>
+        {bowlingPlayers.map((playerKey) => {
+          const team =
+              state.teams?.[currentInnings.bowlingTeamId ?? ""];
+          let label = String(playerKey);
+
+          if (team) {
+            const players = team.players;
+            if (Array.isArray(players)) {
+              label = String(playerKey);
+            } else if (players && typeof players === "object") {
+              const p = (players as Record<string, any>)[
+                  playerKey
+                  ];
+              label = p?.name ?? String(playerKey);
+            }
+          }
+
+          const balls = bowlerBalls[playerKey] ?? 0;
+          const overs = Math.floor(balls / 6);
+          const isConsecutive =
+              isAtOverBreak &&
+              currentInnings.lastOverBowler === playerKey;
+          const isMaxed = overs >= 2;
+
+          const oversLimitVal = clamp(
+              state.oversLimit ?? 16,
+              1,
+              50,
+          );
+          const infeasible = !canCompleteRemainingOvers(
+              currentInnings,
+              bowlingPlayers,
+              playerKey,
+              oversLimitVal,
+          );
+
+          const disabledReason = isMaxed
+              ? " – max"
+              : isConsecutive
+                  ? " – last over"
+                  : infeasible
+                      ? " – not allowed (would block finish)"
+                      : "";
+
+          return (
+              <option
+                  key={playerKey}
+                  value={playerKey}
+                  disabled={isMaxed || isConsecutive || infeasible}
+                  title={
+                    isMaxed
+                        ? `${label} – reached 2 overs`
+                        : isConsecutive
+                            ? `${label} – bowled last over`
+                            : infeasible
+                                ? "Picking this bowler would prevent completing the remaining overs"
+                                : ""
+                  }
+              >
+                {label} ({overs}/2){disabledReason}
+              </option>
+          );
+        })}
+      </select>
+    </div>
+  </div>
+</TabsContent>
+            !isAdmin ||
+            !state.setupCompleted ||
+            needsBowlerSelection ||
+            isOverBreak ||
+            isSkinBreak ||
+            !isReadyToScore ||
+            isMatchCompleted
+                    <p
+                      className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                      data-testid="text-match-label"
+                    >
+    // Fixed skin number is persisted; don't derive on render.
+      stats.set(key, { name: key, runs: 0, balls: 0, outs: 0, skin: skinMap[key] });
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { useLocation, useRoute } from "wouter";
@@ -4261,6 +4556,538 @@ function TraditionalScoreboardCard({
         </div>
       ) : null}
     </Card>
+  );
+}
+
+// ...existing code...
+{showResetConfirm ? (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* backdrop */}
+      <div
+          className="absolute inset-0 bg-black/40"
+          onClick={() => setShowResetConfirm(false)}
+      />
+
+      {/* dialog */}
+      <div className="relative z-10 w-full max-w-lg rounded-xl bg-card p-6 shadow-lg">
+        <h3 className="text-lg font-semibold">Confirm reset</h3>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Are you sure you want to reset the match? This clears the
+          current innings score. You can still use Undo to revert this
+          action.
+        </p>
+
+        <div className="mt-4 flex justify-end gap-2">
+          <Button
+              variant="outline"
+              onClick={() => setShowResetConfirm(false)}
+          >
+            Cancel
+          </Button>
+
+          <Button
+              variant="destructive"
+              onClick={() => {
+                // call your existing resetMatch function and close the modal
+                resetMatch();
+                setShowResetConfirm(false);
+              }}
+              data-testid="button-confirm-reset"
+          >
+            Reset match
+          </Button>
+        </div>
+      </div>
+    </div>
+) : null}
+<footer
+    className="mt-8 pb-10 text-xs text-muted-foreground"
+    data-testid="text-footer"
+>
+  Tip: keep the scorer device in Admin mode; share the Viewer link with
+  spectators.
+</footer>
+
+{teamObj ? (
+    <ManageRoster
+        teams={rosterTeams}
+        initialTeamId={currentBattingTeamId}
+        open={isRosterOpen}
+        onClose={() => setRosterOpen(false)}
+        onChange={(teamId, updatedTeam) => {
+          // Convert ManageRoster's {players: Record<id, Player>, roster: string[]}
+          // back into scoring-app's internal team shape { players: string[] }.
+          const rosterIds =
+              Array.isArray((updatedTeam as any).roster) &&
+              (updatedTeam as any).roster.length
+                  ? ((updatedTeam as any).roster as string[])
+                  : Object.keys(
+                      (((updatedTeam as any).players ?? {}) as Record<string, any>)
+                  );
+
+          // Store *names* in scoring-app teams.players so the dropdowns show names
+          // (scoring-app currently treats teams.players as a string[] roster).
+          const playersMap =
+              (((updatedTeam as any).players ?? {}) as Record<string, any>) || {};
+          const nextPlayerNames = rosterIds.map(
+              (id) => playersMap?.[id]?.name ?? id,
+          );
+
+          safeSet({
+            ...state,
+            teams: {
+              ...state.teams,
+              [teamId]: {
+                ...(state.teams?.[teamId] ?? {}),
+                id:
+                    (updatedTeam as any).id ??
+                    (state.teams?.[teamId] as any)?.id ??
+                    teamId,
+                name:
+                    (updatedTeam as any).name ??
+                    (state.teams?.[teamId] as any)?.name,
+                players: nextPlayerNames,
+              },
+            },
+          });
+        }}
+        onSubstitute={async (teamId, oldId, newId) => {
+          // Update active innings roles if the outgoing player is currently assigned.
+          // NOTE: We do NOT add to usedBatters here because injured batters are allowed to return later.
+          const innIndex = state.inningsIndex;
+          const currentInn = state.innings[innIndex];
+
+          const affectsCurrentInn =
+              currentInn?.striker === oldId ||
+              currentInn?.nonStriker === oldId ||
+              currentInn?.bowler === oldId;
+
+          const withHistory = pushHistory(state);
+          const prevInn = withHistory.innings[innIndex];
+
+          const nextInn: Innings = {
+            ...prevInn,
+            striker: prevInn.striker === oldId ? newId : prevInn.striker,
+            nonStriker:
+                prevInn.nonStriker === oldId ? newId : prevInn.nonStriker,
+            bowler: prevInn.bowler === oldId ? newId : prevInn.bowler,
+            allBalls: [
+              ...(prevInn.allBalls ?? []),
+              {
+                id: uid("sub"),
+                ts: Date.now(),
+                type: "substitution" as any,
+                runs: 0,
+                countsBall: false,
+                note: `Substitution ${oldId} → ${newId}`,
+              } as any,
+            ],
+          };
+
+          const innings = [...withHistory.innings];
+          innings[innIndex] = nextInn;
+          safeSet({ ...withHistory, innings });
+
+          toast({
+            title: "Substitution recorded",
+            description: affectsCurrentInn
+                ? "Replaced the player in the current innings."
+                : "Player added as a substitution (not currently on field).",
+          });
+        }}
+        api={{
+          addPlayer: (teamId: string, name: string) =>
+              teamApi.addPlayer(teamId, name, state.matchId, keyFromUrl),
+          updatePlayer: (teamId: string, playerId: string, payload: any) =>
+              teamApi.updatePlayer
+                  ? teamApi.updatePlayer(teamId, playerId, payload)
+                  : Promise.reject(new Error("Not implemented")),
+          deactivatePlayer: (teamId: string, playerId: string) =>
+              teamApi.deactivatePlayer
+                  ? teamApi.deactivatePlayer(teamId, playerId)
+                  : Promise.reject(new Error("Not implemented")),
+        }}
+    />
+) : null}
+</div>
+</div>
+);
+}
+
+function BigButton({
+                     label,
+                     sub,
+                     tone,
+                     disabled,
+                     onClick,
+                     testId,
+                   }: {
+  label: string;
+  sub: string;
+  tone: "primary" | "secondary" | "accent" | "danger";
+  disabled?: boolean;
+  onClick: () => void;
+  testId: string;
+}) {
+  const toneClasses =
+      tone === "primary"
+          ? "bg-primary text-primary-foreground border border-primary/30"
+          : tone === "accent"
+              ? "bg-accent text-accent-foreground border border-accent/30"
+              : tone === "danger"
+                  ? "bg-destructive text-destructive-foreground border border-destructive/30"
+                  : "bg-secondary text-secondary-foreground border";
+
+  return (
+      <Button
+          className={cn(
+              "tap pressable h-16 sm:h-20 rounded-2xl text-left justify-between px-4",
+              toneClasses,
+          )}
+          disabled={disabled}
+          onClick={onClick}
+          data-testid={testId}
+      >
+        <div className="flex items-end justify-between w-full">
+          <div className="flex flex-col">
+          <span className="text-2xl sm:text-3xl font-display leading-none">
+            {label}
+          </span>
+            <span className="text-xs opacity-90">{sub}</span>
+          </div>
+          <span className="text-xs opacity-80">Tap</span>
+        </div>
+      </Button>
+  );
+}
+
+function SmallStepper({
+                        title,
+                        disabled,
+                        onAdd,
+                        testBase,
+                        alt,
+                        altAction,
+                        altLabel,
+                      }: {
+  title: string;
+  disabled?: boolean;
+  onAdd: (n: number) => void;
+  testBase: string;
+  alt?: boolean;
+  altAction?: (n: number) => void;
+  altLabel?: string;
+}) {
+  const options = [1, 2, 3, 4];
+
+  return (
+      <Card className="bg-card/60 border p-3">
+        <p
+            className="text-sm font-semibold"
+            data-testid={`text-extra-${testBase}`}
+        >
+          {title}
+        </p>
+        <div className="mt-2 grid grid-cols-4 gap-1">
+          {options.map((n) => (
+              <Button
+                  key={n}
+                  variant="secondary"
+                  className="tap pressable h-10 rounded-xl px-0"
+                  disabled={disabled}
+                  onClick={() => onAdd(n)}
+                  data-testid={`button-extra-${testBase}-${n}`}
+              >
+                +{n}
+              </Button>
+          ))}
+        </div>
+        {alt && altAction ? (
+            <div className="mt-2">
+              <Button
+                  variant="outline"
+                  className="tap pressable h-10 w-full rounded-xl"
+                  disabled={disabled}
+                  onClick={() => altAction(1)}
+                  data-testid={`button-extra-${testBase}-alt`}
+              >
+                {altLabel ?? "Alt"}
+              </Button>
+            </div>
+        ) : null}
+      </Card>
+  );
+}
+
+function Field({
+                 label,
+                 value,
+                 disabled,
+                 onChange,
+                 testId,
+               }: {
+  label: string;
+  value: string;
+  disabled?: boolean;
+  onChange: (v: string) => void;
+  testId: string;
+}) {
+  return (
+      <div className="space-y-2">
+        <Label className="text-sm" data-testid={`label-${testId}`}>
+          {label}
+        </Label>
+        <Input
+            value={value}
+            readOnly={disabled}
+            onChange={(e) => {
+              if (disabled) return;
+              onChange(e.target.value);
+            }}
+            className={cn(
+                "h-11 rounded-xl bg-card/70",
+                disabled && "pointer-events-none opacity-60",
+            )}
+        />
+      </div>
+  );
+}
+
+function TraditionalScoreboardCard({
+                                     state,
+                                     teamAName,
+                                     teamBName,
+                                     inningsA,
+                                     inningsB,
+                                   }: {
+  state: MatchState;
+  teamAName: string;
+  teamBName: string;
+  inningsA: Innings | null;
+  inningsB: Innings | null;
+}) {
+  // Active innings should be driven by match state, not by whether the 2nd innings has "started".
+  // This keeps the 1st innings scorecard always accessible after innings switch.
+  const activeInnings: Innings | null =
+      state.inningsIndex >= 1
+          ? state.innings?.[state.inningsIndex] ?? inningsB ?? inningsA
+          : state.innings?.[0] ?? inningsA ?? inningsB;
+
+  const previousInnings: Innings | null =
+      state.inningsIndex >= 1
+          ? state.innings?.[state.inningsIndex - 1] ?? inningsA
+          : null;
+
+  const [showPreviousInnings, setShowPreviousInnings] = useState(false);
+
+  const teamNameForInnings = (inn: Innings | null) => {
+    if (!inn) return "—";
+    return inn.battingTeamId === "a" ? teamAName : teamBName;
+  };
+
+  const renderInningsScorecard = (inn: Innings | null) => {
+    if (!inn) return null;
+
+    const battingTeamName = teamNameForInnings(inn);
+    const innNet = computeInningsNet(inn);
+
+    const totalOuts = inn.wickets ?? 0;
+    const totalOvers = formatOvers(inn.balls ?? 0, state.oversLimit);
+
+    const extras = inn.extras ?? {
+      wide: 0,
+      noball: 0,
+      bye: 0,
+      legbye: 0,
+    };
+    const extrasTotal =
+        (extras.wide ?? 0) +
+        (extras.noball ?? 0) +
+        (extras.bye ?? 0) +
+        (extras.legbye ?? 0);
+
+    const batters = computeBattingCard(inn);
+    const visibleBatters = (batters ?? []).map((b) => ({
+      ...b,
+      // Real score shown on batter card: runs - (5 * outs)
+      runs: Number(b.runs ?? 0) - Number(b.outs ?? 0) * WICKET_PENALTY,
+    }));
+
+    type BowlerStat = { name: string; balls: number; runs: number; wickets: number };
+
+    const computeBowlingCard = (inn2: Innings | null): BowlerStat[] => {
+      if (!inn2) return [];
+
+      const stats = new Map<string, BowlerStat>();
+      const ensure = (name: string) => {
+        const key = String(name || "").trim();
+        if (!key) return null;
+        if (!stats.has(key)) stats.set(key, { name: key, balls: 0, runs: 0, wickets: 0 });
+        return stats.get(key)!;
+      };
+
+      for (const ev of (inn2.allBalls ?? []) as BallEvent[]) {
+        const type = String(ev.type);
+        const isExtra = type === "wide" || type === "noball" || type === "bye" || type === "legbye";
+        const isDeliveryLike =
+            Boolean(ev.countsBall) || type === "wicket" || type === "run" || type === "dot" || isExtra;
+        if (!isDeliveryLike) continue;
+
+        const bowler = String(ev.bowlerAtEvent ?? "").trim();
+        const s = ensure(bowler);
+        if (!s) continue;
+
+        s.runs += Number(ev.runs ?? 0);
+        if (ev.isWicket || type === "wicket") s.wickets += 1;
+        if (ev.countsBall) s.balls += 1;
+      }
+
+      ensure(inn2.bowler);
+
+      const all = Array.from(stats.values());
+      all.sort((a, b) => {
+        if (b.wickets !== a.wickets) return b.wickets - a.wickets;
+        if (a.runs !== b.runs) return a.runs - b.runs;
+        return a.name.localeCompare(b.name);
+      });
+
+      return all;
+    };
+
+    const bowlers = computeBowlingCard(inn);
+
+    return (
+        <div className="mt-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold truncate">{battingTeamName}</p>
+            </div>
+            <div className="text-right">
+              <div className="flex items-baseline justify-end gap-2">
+                <span className="text-xs font-semibold tracking-wide text-muted-foreground">NET</span>
+                <span className="text-2xl font-display leading-none tabular-nums">
+                {innNet}/{totalOuts}
+              </span>
+                <span className="text-sm font-medium text-muted-foreground tabular-nums">({totalOvers} Ov)</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Batters */}
+          <div className="mt-3 grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 text-xs font-semibold text-muted-foreground border-b pb-2">
+            <div>Batters</div>
+            <div className="text-right">R</div>
+            <div className="text-right">B</div>
+            <div className="text-right">Outs</div>
+          </div>
+
+          {visibleBatters.length ? (
+              <div className="divide-y">
+                {visibleBatters.map((b) => (
+                    <div key={b.name} className="grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 py-3 text-sm">
+                      <div className="min-w-0">
+                        <div className="font-medium truncate" title={b.name}>
+                          {b.name}
+                        </div>
+                        {b.skin ? (
+                            <div className="mt-1">
+                     <span className="inline-flex items-center rounded-md border bg-muted/20 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                        Skin {b.skin}
+                      </span>
+                            </div>
+                        ) : null}
+                      </div>
+                      <div className="text-right tabular-nums">{b.runs}</div>
+                      <div className="text-right tabular-nums">{b.balls}</div>
+                      <div className="text-right tabular-nums">{b.outs}</div>
+                    </div>
+                ))}
+              </div>
+          ) : (
+              <p className="mt-3 text-sm text-muted-foreground">No batting data yet.</p>
+          )}
+
+          {/* Bottom summary */}
+          <div className="mt-3 border-t pt-3 space-y-2 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Extras</span>
+              <span className="tabular-nums">
+              {extrasTotal}{" "}
+                <span className="text-muted-foreground">
+                (wd {extras.wide ?? 0}, nb {extras.noball ?? 0}, b {extras.bye ?? 0}, lb {extras.legbye ?? 0})
+              </span>
+            </span>
+            </div>
+            <div className="flex items-center justify-between font-medium">
+              <span>Total</span>
+              <span className="tabular-nums">
+              {innNet}/{totalOuts} <span className="text-muted-foreground">({totalOvers} Ov)</span>
+            </span>
+            </div>
+          </div>
+
+          {/* Bowlers */}
+          <div className="mt-6">
+            <p className="text-sm font-semibold">Bowlers</p>
+
+            <div className="mt-2 grid grid-cols-[1fr,3rem,3rem,3rem] gap-2 text-xs font-semibold text-muted-foreground border-b pb-2">
+              <div>Bowler</div>
+              <div className="text-right">O</div>
+              <div className="text-right">R</div>
+              <div className="text-right">W</div>
+            </div>
+
+            {bowlers.length ? (
+                <div className="divide-y">
+                  {bowlers.map((b) => (
+                      <div key={b.name} className="grid grid-cols-[1fr,3rem,3rem,3rem] gap-2 py-3 text-sm">
+                        <div className="font-medium truncate" title={b.name}>
+                          {b.name}
+                        </div>
+                        <div className="text-right tabular-nums">{formatOvers(b.balls ?? 0, 999)}</div>
+                        <div className="text-right tabular-nums">{b.runs}</div>
+                        <div className="text-right tabular-nums">{b.wickets}</div>
+                      </div>
+                  ))}
+                </div>
+            ) : (
+                <p className="mt-3 text-sm text-muted-foreground">No bowling data yet.</p>
+            )}
+          </div>
+        </div>
+    );
+  };
+
+  return (
+      <Card className="glass p-4 sm:p-6">
+        <div className="mb-3">
+          <div className="text-xs font-semibold tracking-widest text-muted-foreground">SCOREBOARD</div>
+        </div>
+
+        {/* Current innings always visible */}
+        {renderInningsScorecard(activeInnings)}
+
+        {/* Previous innings collapsible */}
+        {previousInnings ? (
+            <div className="mt-4">
+              <div className="flex justify-end">
+                <Button
+                    variant="ghost"
+                    className="h-8 px-2 text-xs"
+                    onClick={() => setShowPreviousInnings((v) => !v)}
+                >
+                  {showPreviousInnings ? "Hide 1st Innings Scorecard ▲" : "View 1st Innings Scorecard ▼"}
+                </Button>
+              </div>
+
+              {showPreviousInnings ? (
+                  <div className="mt-2 rounded-xl border bg-card/40 p-3">
+                    {renderInningsScorecard(previousInnings)}
+                  </div>
+              ) : null}
+            </div>
+        ) : null}
+      </Card>
   );
 }
 
