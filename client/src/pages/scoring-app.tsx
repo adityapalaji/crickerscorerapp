@@ -104,6 +104,10 @@ type Innings = {
 
   completedSkins: SkinScore[];
 
+  // Persisted: batterId -> skin number assigned when that batter first joined a pair.
+  // This must never be recomputed from current state during rendering.
+  batterSkinById?: Record<string, number>;
+
   // 👇 THESE THREE LINES ARE WHAT “Extend Innings” MEANS
   usedBatters: string[];
 };
@@ -151,11 +155,14 @@ type BatterStat = { name: string; runs: number; balls: number; outs: number; ski
 function computeBattingCard(inn: Innings | null): BatterStat[] {
   if (!inn) return [];
 
+  const skinMap = inn.batterSkinById ?? {};
+
   const stats = new Map<string, BatterStat>();
   const ensure = (name: string) => {
     const key = String(name || "").trim();
     if (!key) return null;
-    if (!stats.has(key)) stats.set(key, { name: key, runs: 0, balls: 0, outs: 0 });
+    if (!stats.has(key))
+      stats.set(key, { name: key, runs: 0, balls: 0, outs: 0, skin: skinMap[key] });
     return stats.get(key)!;
   };
 
@@ -173,10 +180,9 @@ function computeBattingCard(inn: Innings | null): BatterStat[] {
     // Outs: attribute to striker for now (good enough for this app's model)
     if (ev.isWicket || ev.type === "wicket") s.outs += 1;
 
-    // Rough skin attribution by legal ball index (24 balls per skin)
-    if (s.skin == null && ev.countsBall) {
-      const legalIndex = Math.max(0, (inn.balls ?? 0) - 1);
-      s.skin = Math.floor(legalIndex / 24) + 1;
+    // Fixed skin number is persisted; don't derive on render.
+    if (s.skin == null && skinMap[striker] != null) {
+      s.skin = skinMap[striker];
     }
   }
 
@@ -287,6 +293,9 @@ function defaultMatch(matchId?: string): MatchState {
     usedBatters: [],
     completedSkins: [],
     awaitingBatsmanSelection: false,
+
+    // NEW: per-batter fixed skin assignment map
+    batterSkinById: {},
 
     allBalls: [],
     currentSkin: {
@@ -1186,6 +1195,9 @@ function ScoringApp() {
         wickets: 0,
       },
       completedSkins: [],
+
+      // NEW: reset fixed skin assignments
+      batterSkinById: {},
     };
 
     safeSet(
@@ -1282,12 +1294,39 @@ function ScoringApp() {
     bowlerId: string | "",
   ) {
     const inn = state.innings[state.inningsIndex];
+
+    const nextStriker = (strikerId || "").trim();
+    const nextNonStriker = (nonStrikerId || "").trim();
+
+    // Determine whether we're creating a NEW pair (skin break) vs a simple swap/mid-skin tweak.
+    // New pair is created when BOTH batters are set, and the previous innings state had no batters selected.
+    const prevHadNoBatters = !String(inn.striker ?? "").trim() && !String(inn.nonStriker ?? "").trim();
+    const nextHasBothBatters = Boolean(nextStriker) && Boolean(nextNonStriker);
+
+    const isNewPairCreated = prevHadNoBatters && nextHasBothBatters;
+
+    const nextSkinNumber = Math.min(TOTAL_SKINS, (inn.skinIndex ?? 0) + 1);
+
+    // Persist skin assignment per batter when a new pair is created.
+    // Once assigned, it must never change.
+    let batterSkinById: Record<string, number> = { ...(inn.batterSkinById ?? {}) };
+    if (isNewPairCreated) {
+      if (nextStriker && batterSkinById[nextStriker] == null) {
+        batterSkinById[nextStriker] = nextSkinNumber;
+      }
+      if (nextNonStriker && batterSkinById[nextNonStriker] == null) {
+        batterSkinById[nextNonStriker] = nextSkinNumber;
+      }
+    }
+
     const updated: Innings = {
       ...inn,
-      striker: strikerId || undefined,
-      nonStriker: nonStrikerId || undefined,
+      striker: nextStriker || undefined,
+      nonStriker: nextNonStriker || undefined,
       bowler: bowlerId || undefined,
+      batterSkinById,
     };
+
     const innings = [...state.innings];
     innings[state.inningsIndex] = updated;
     safeSet({ ...state, innings });
@@ -1346,6 +1385,9 @@ function ScoringApp() {
       bowler: "",
       deliveries: 0,
       usedBatters: [],
+
+      // NEW: reset fixed skin assignment map for the new innings
+      batterSkinById: {},
 
       overEvents: [],
       lastOverSummary: [],
@@ -1549,6 +1591,9 @@ function ScoringApp() {
         bowler: "",
         deliveries: 0,
         usedBatters: [],
+
+        // NEW: reset fixed skin assignment map for the new innings
+        batterSkinById: {},
 
         overEvents: [],
         lastOverSummary: [],
@@ -3630,7 +3675,7 @@ function ScoringApp() {
                   return (
                     <div
                       key={skin}
-                      className="grid grid-cols-4 text-sm py-2 border-b"
+                      className="grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 py-2 border-b"
                     >
                       <div>Skin {skin + 1}</div>
 
