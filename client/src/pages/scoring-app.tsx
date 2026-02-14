@@ -4055,17 +4055,17 @@ function TraditionalScoreboardCard({
 
   const batters = computeBattingCard(activeInnings);
 
-  // Apply skins wicket penalty to individual batter runs (UI-only) so it matches the net scoring rule.
-  // Team totals already apply wicket penalties separately; this is just to make the batting card intuitive.
-  const battersWithSkinsPenalty = useMemo(() => {
-    const display = String(state?.scoreboardDisplay ?? "");
-    if (display !== "skins") return batters;
+    // Apply skins wicket penalty to individual batter runs (UI-only) so it matches the net scoring rule.
+    // IMPORTANT: This should follow the match's scoring mode (skins), not the selected UI card.
+    const battersWithSkinsPenalty = useMemo(() => {
+    const isSkinsMode = (state?.scoreboardDisplay ?? "skins") === "skins";
+    if (!isSkinsMode) return batters;
 
     return (batters ?? []).map((b) => ({
       ...b,
-      runs: Number(b.runs ?? 0) - Number(b.outs ?? 0) * 5,
+      runs: Number(b.runs ?? 0) - Number(b.outs ?? 0) * WICKET_PENALTY,
     }));
-  }, [batters, state?.scoreboardDisplay]);
+    }, [batters, state?.scoreboardDisplay]);
 
   const computeBowlingCard = (inn: Innings | null): BowlerStat[] => {
     if (!inn) return [];
