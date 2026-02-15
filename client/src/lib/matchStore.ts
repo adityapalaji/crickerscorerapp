@@ -6,22 +6,24 @@ let kv: any = null;
 const isProd = process.env.NODE_ENV === "production";
 
 async function getKv() {
+  // If running locally, skip KV completely
+  if (process.env.NODE_ENV === "development") {
+    return null;
+  }
+
   if (kv) return kv;
+
   try {
-    // Lazy import so local dev without KV env doesn’t crash build/runtime.
     const mod = await import("@vercel/kv");
     kv = mod.kv;
   } catch (err) {
-    if (isProd) {
-      throw new Error(
-        "Vercel KV is required in production, but @vercel/kv failed to load. Ensure KV env vars are configured.",
-        { cause: err as any },
-      );
-    }
+    console.warn("KV not available, falling back to memory store.");
     kv = null;
   }
+
   return kv;
 }
+
 
 const memStore = new Map<string, MatchState>();
 
@@ -30,10 +32,10 @@ function keyFor(matchId: string) {
 }
 
 export async function loadMatchState(matchId: string): Promise<MatchState | null> {
-  const client = await getKv();
-  if (client) {
+  const kvClient = await getKv();
+  if (!kvClient) {
     try {
-      const v = await client.get(keyFor(matchId));
+      const v = await kvClient.get(keyFor(matchId));
       return (v as MatchState) ?? null;
     } catch (err) {
       if (isProd) throw err;
@@ -51,10 +53,10 @@ export async function saveMatchState(
   matchId: string,
   state: MatchState,
 ): Promise<MatchState> {
-  const client = await getKv();
-  if (client) {
+  const kvClient = await getKv();
+  if (!kvClient) {
     try {
-      await client.set(keyFor(matchId), state);
+      await kvClient.set(keyFor(matchId), state);
       return state;
     } catch (err) {
       if (isProd) throw err;
