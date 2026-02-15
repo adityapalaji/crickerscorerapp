@@ -28,7 +28,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).end(`Method ${req.method} Not Allowed`);
   }
 
-  const state = createDefaultMatchState();
+  // Optional: allow UI to pick scoreboard layout before match start.
+  let scoreboardDisplay: "skins" | "traditional" | undefined;
+  try {
+    const body = (typeof req.body === "string" ? JSON.parse(req.body) : req.body) as any;
+    const raw = body?.scoreboardDisplay;
+    if (raw === "skins" || raw === "traditional") scoreboardDisplay = raw;
+  } catch {
+    // ignore malformed body; we'll default
+  }
+
+  const state = createDefaultMatchState({ scoreboardDisplay });
   const adminKey = (state as any).adminKey as string;
   await saveMatch((state as any).matchId, state as any);
 

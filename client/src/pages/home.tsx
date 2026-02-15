@@ -1,6 +1,11 @@
 import React, { useMemo, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import {
+  RadioGroup,
+  RadioGroupItem,
+} from "@/components/ui/radio-group";
+import { Label } from "@/components/ui/label";
 
 function getQueryMode(): "admin" | "viewer" {
   if (typeof window === "undefined") return "admin";
@@ -11,6 +16,9 @@ function getQueryMode(): "admin" | "viewer" {
 export default function HomeLanding() {
   const [isCreating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scoreboardDisplay, setScoreboardDisplay] = useState<
+    "skins" | "traditional"
+  >("skins");
 
   const mode = useMemo(() => getQueryMode(), []);
   const isViewerLanding = mode === "viewer";
@@ -38,33 +46,67 @@ export default function HomeLanding() {
           </div>
 
           {!isViewerLanding ? (
-            <Button
-              className="w-full"
-              onClick={async () => {
-                if (typeof window === "undefined") return;
-                if (isCreating) return;
+            <div className="space-y-3">
+              <div className="rounded-md border p-3">
+                <div className="text-sm font-medium">Scoreboard type</div>
+                <div className="mt-2">
+                  <RadioGroup
+                    value={scoreboardDisplay}
+                    onValueChange={(v) => {
+                      if (v === "skins" || v === "traditional") {
+                        setScoreboardDisplay(v);
+                      }
+                    }}
+                    className="grid gap-2"
+                  >
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="skins" id="scoreboard-skins" />
+                      <Label htmlFor="scoreboard-skins">
+                        Skin-wise comparison (default)
+                      </Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="traditional" id="scoreboard-traditional" />
+                      <Label htmlFor="scoreboard-traditional">
+                        Traditional scoreboard
+                      </Label>
+                    </div>
+                  </RadioGroup>
+                </div>
+              </div>
 
-                setError(null);
-                setCreating(true);
-                try {
-                  const res = await fetch("/api/matches", { method: "POST" });
-                  if (!res.ok) {
-                    const body = await res.json().catch(() => ({}));
-                    throw new Error(body?.error || `HTTP ${res.status}`);
+              <Button
+                className="w-full"
+                onClick={async () => {
+                  if (typeof window === "undefined") return;
+                  if (isCreating) return;
+
+                  setError(null);
+                  setCreating(true);
+                  try {
+                    const res = await fetch("/api/matches", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ scoreboardDisplay }),
+                    });
+                    if (!res.ok) {
+                      const body = await res.json().catch(() => ({}));
+                      throw new Error(body?.error || `HTTP ${res.status}`);
+                    }
+                    const data = (await res.json()) as { adminUrl?: string };
+                    if (!data?.adminUrl) throw new Error("Missing adminUrl");
+                    window.location.assign(data.adminUrl);
+                  } catch (e: any) {
+                    setError(e?.message || "Failed to create match");
+                    setCreating(false);
                   }
-                  const data = (await res.json()) as { adminUrl?: string };
-                  if (!data?.adminUrl) throw new Error("Missing adminUrl");
-                  window.location.assign(data.adminUrl);
-                } catch (e: any) {
-                  setError(e?.message || "Failed to create match");
-                  setCreating(false);
-                }
-              }}
-              disabled={isCreating}
-              data-testid="button-start-new-match"
-            >
-              {isCreating ? "Creating match…" : "Start New Match (Admin)"}
-            </Button>
+                }}
+                disabled={isCreating}
+                data-testid="button-start-new-match"
+              >
+                {isCreating ? "Creating match…" : "Start New Match (Admin)"}
+              </Button>
+            </div>
           ) : (
             <Button
               className="w-full"

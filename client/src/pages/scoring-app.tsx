@@ -6,7 +6,6 @@ import { motion } from "framer-motion";
 import ManageRoster from "../components/ui/ManageRoster"; // adjust path if needed
 import * as teamApi from "../api/teams";
 import { commitSubstitutionToState } from "../lib/substitution";
-import type { Team } from "../types";
 import {
   ArrowLeft,
   Copy,
@@ -14,8 +13,6 @@ import {
   Eye,
   RotateCcw,
   Share2,
-  Shield,
-  Trophy,
   Undo2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -27,9 +24,16 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { fetchMatchFromCloud, saveMatchToCloud, createMatchInCloud } from "../lib/cloudSync";
+import {
+  fetchMatchFromCloud,
+  saveMatchToCloud,
+  createMatchInCloud,
+} from "../lib/cloudSync";
 
 type Role = "admin" | "viewer";
+
+// NEW: scoreboard display options (rendering only)
+type ScoreboardDisplayType = "skins" | "traditional";
 
 type BallEventType =
   | "dot"
@@ -48,6 +52,14 @@ type BallEvent = {
   countsBall: boolean;
   isWicket?: boolean;
   note?: string;
+
+  // Persisted attribution so stats remain correct when players/bowlers change.
+  strikerAtEvent?: string;
+  nonStrikerAtEvent?: string;
+  bowlerAtEvent?: string;
+
+  // Runs credited to batter only (extras credited to team total, not batter).
+  batterRuns?: number;
 };
 type SkinScore = {
   skin: number;
@@ -96,16 +108,12 @@ type Innings = {
 
   completedSkins: SkinScore[];
 
+  // Persisted: batterId -> skin number assigned when that batter first joined a pair.
+  // This must never be recomputed from current state during rendering.
+  batterSkinById?: Record<string, number>;
+
   // 👇 THESE THREE LINES ARE WHAT “Extend Innings” MEANS
   usedBatters: string[];
-};
-
-type SkinResult = {
-  skin: number;
-  teamId: "a" | "b";
-  grossRuns: number;
-  wickets: number;
-  netRuns: number;
 };
 
 type MatchState = {
@@ -134,15 +142,84 @@ type MatchState = {
   tossWinner?: "a" | "b" | null;
   tossChoice?: "bat" | "bowl" | null;
 
+  // NEW: scoreboard display setting (persisted per match)
+  scoreboardDisplay?: ScoreboardDisplayType;
+
   adminKey: string; // used only to gate UI locally + share link
   history: { snapshots: MatchState[] };
 };
 
 const STORAGE_PREFIX = "ic_scoring_match_v1:";
-const MAX_BOWLER_BALLS = 12;
 const TOTAL_SKINS = 4;
 
 const WICKET_PENALTY = 5;
+
+type BatterStat = {
+  name: string;
+  runs: number;
+  balls: number;
+  outs: number;
+  skin?: number;
+};
+
+function computeBattingCard(inn: Innings | null): BatterStat[] {
+  if (!inn) return [];
+
+  const skinMap = inn.batterSkinById ?? {};
+
+  const stats = new Map<string, BatterStat>();
+  const ensure = (name: string) => {
+    const key = String(name || "").trim();
+    if (!key) return null;
+    if (!stats.has(key))
+      stats.set(key, {
+        name: key,
+        runs: 0,
+        balls: 0,
+        outs: 0,
+        skin: skinMap[key],
+      });
+    return stats.get(key)!;
+  };
+
+  for (const ev of (inn.allBalls ?? []) as BallEvent[]) {
+    const striker = String(ev.strikerAtEvent ?? "").trim();
+    const s = ensure(striker);
+    if (!s) continue;
+
+    // Batter runs are already tracked on the event (extras -> 0)
+    s.runs += Number(ev.batterRuns ?? 0);
+
+    // Balls faced: only legal deliveries are faced
+    if (ev.countsBall) s.balls += 1;
+
+    // Outs: attribute to striker for now (good enough for this app's model)
+    if (ev.isWicket || ev.type === "wicket") s.outs += 1;
+
+    // Fixed skin number is persisted; don't derive on render.
+    if (s.skin == null && skinMap[striker] != null) {
+      s.skin = skinMap[striker];
+    }
+  }
+
+  // Ensure currently selected batters show even before any events
+  ensure(inn.striker);
+  ensure(inn.nonStriker);
+
+  const all = Array.from(stats.values());
+  all.sort((a, b) => {
+    const skinA = a.skin ?? 0;
+    const skinB = b.skin ?? 0;
+
+    if (skinA !== skinB) {
+      return skinA - skinB; // Skin 1 first, then 2, then 3
+    }
+
+    return 0; // preserve original insertion order within same skin
+  });
+
+  return all;
+}
 
 function computeInningsNet(inn?: Innings | null): number {
   if (!inn) return 0;
@@ -168,38 +245,13 @@ function formatOvers(balls: number, oversLimit = 16) {
   return `${o}.${b}`;
 }
 
-function computeSkinNet(
-  innings: Innings | undefined,
-  skinIndex: number,
-): number | null {
-  if (!innings) return null;
-
-  const SKIN_BALLS = 24;
-  const start = skinIndex * SKIN_BALLS;
-  const end = start + SKIN_BALLS;
-
-  // Build a FULL chronological ball list
-  const allBalls: BallEvent[] = [
-    ...innings.lastOverSummary,
-    ...innings.overEvents,
-  ];
-
-  let net = 0;
-
-  allBalls.slice(start, end).forEach((ev) => {
-    net += ev.runs;
-  });
-
-  return net;
-}
-
-function getEventRuns(ev: any): number {
-  return typeof ev.runs === "number" ? ev.runs : -5;
-}
-
-function totalExtras(extras: Innings["extras"]) {
-  return extras.wide + extras.noball + extras.bye + extras.legbye;
-}
+type SkinResult = {
+  skin: number;
+  teamId: "a" | "b";
+  grossRuns: number;
+  wickets: number;
+  netRuns: number;
+};
 
 function getLocalKey(matchId: string) {
   return `${STORAGE_PREFIX}${matchId}`;
@@ -219,6 +271,10 @@ function loadMatch(matchId: string): MatchState | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as MatchState;
     if (!parsed || parsed.version !== 1) return null;
+
+    // Backward-compatible defaulting.
+    if (!parsed.scoreboardDisplay) parsed.scoreboardDisplay = "skins";
+
     return parsed;
   } catch {
     return null;
@@ -252,6 +308,9 @@ function defaultMatch(matchId?: string): MatchState {
     completedSkins: [],
     awaitingBatsmanSelection: false,
 
+    // NEW: per-batter fixed skin assignment map
+    batterSkinById: {},
+
     allBalls: [],
     currentSkin: {
       grossRuns: 0,
@@ -284,6 +343,9 @@ function defaultMatch(matchId?: string): MatchState {
 
     status: "setup",
     setupCompleted: false,
+
+    // NEW: default scoreboard display (matches current UI)
+    scoreboardDisplay: "skins",
 
     adminKey,
     history: { snapshots: [] },
@@ -328,22 +390,47 @@ function isExtraMarkedWicket(
 // --- END helper ---
 
 function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
+  // Normalize/attribute the event at the moment it's created.
+  const type = ev.type;
+  const isWicket = ev.isWicket ?? type === "wicket";
+
+  const strikerAtEvent = ev.strikerAtEvent ?? inn.striker ?? "";
+  const nonStrikerAtEvent = ev.nonStrikerAtEvent ?? inn.nonStriker ?? "";
+  const bowlerAtEvent = ev.bowlerAtEvent ?? inn.bowler ?? "";
+
+  // Batter runs: only for normal run events. Everything else is extras/team runs.
+  const batterRuns =
+    typeof ev.batterRuns === "number"
+      ? ev.batterRuns
+      : type === "run"
+        ? ev.runs
+        : 0;
+
+  const normalizedEv: BallEvent = {
+    ...ev,
+    isWicket,
+    strikerAtEvent,
+    nonStrikerAtEvent,
+    bowlerAtEvent,
+    batterRuns,
+  };
+
   const updatedCurrentSkin = {
-    grossRuns: inn.currentSkin.grossRuns + ev.runs,
-    wickets: inn.currentSkin.wickets + (ev.isWicket ? 1 : 0),
+    grossRuns: inn.currentSkin.grossRuns + normalizedEv.runs,
+    wickets: inn.currentSkin.wickets + (normalizedEv.isWicket ? 1 : 0),
   };
 
   const next: Innings = {
     ...inn,
-    runs: inn.runs + ev.runs,
-    allBalls: [...inn.allBalls, ev],
-    wickets: inn.wickets + (ev.isWicket ? 1 : 0),
-    balls: inn.balls + (ev.countsBall ? 1 : 0),
+    runs: inn.runs + normalizedEv.runs,
+    allBalls: [...inn.allBalls, normalizedEv],
+    wickets: inn.wickets + (normalizedEv.isWicket ? 1 : 0),
+    balls: inn.balls + (normalizedEv.countsBall ? 1 : 0),
     deliveries: inn.deliveries + 1,
-    ballsInSkin: inn.ballsInSkin + (ev.countsBall ? 1 : 0),
-    currentSkin: updatedCurrentSkin, // ✅ ADD THIS
-    overEvents: [...inn.overEvents, ev],
-    dotBalls: ev.type === "dot" ? inn.dotBalls + 1 : 0,
+    ballsInSkin: inn.ballsInSkin + (normalizedEv.countsBall ? 1 : 0),
+    currentSkin: updatedCurrentSkin,
+    overEvents: [...inn.overEvents, normalizedEv],
+    dotBalls: normalizedEv.type === "dot" ? inn.dotBalls + 1 : 0,
   };
 
   // Skin ends after 4 overs (24 balls)
@@ -388,14 +475,23 @@ function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
     ].filter((b): b is string => Boolean(b));
   }
 
-  if (ev.type === "wide")
-    next.extras = { ...next.extras, wide: next.extras.wide + ev.runs };
-  if (ev.type === "noball")
-    next.extras = { ...next.extras, noball: next.extras.noball + ev.runs };
-  if (ev.type === "bye")
-    next.extras = { ...next.extras, bye: next.extras.bye + ev.runs };
-  if (ev.type === "legbye")
-    next.extras = { ...next.extras, legbye: next.extras.legbye + ev.runs };
+  if (normalizedEv.type === "wide")
+    next.extras = {
+      ...next.extras,
+      wide: next.extras.wide + normalizedEv.runs,
+    };
+  if (normalizedEv.type === "noball")
+    next.extras = {
+      ...next.extras,
+      noball: next.extras.noball + normalizedEv.runs,
+    };
+  if (normalizedEv.type === "bye")
+    next.extras = { ...next.extras, bye: next.extras.bye + normalizedEv.runs };
+  if (normalizedEv.type === "legbye")
+    next.extras = {
+      ...next.extras,
+      legbye: next.extras.legbye + normalizedEv.runs,
+    };
 
   // Only mark the over as completed when a legal delivery has just
   // advanced the balls count to a multiple of 6. This avoids treating
@@ -403,7 +499,7 @@ function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
   // as the *last* over.
   const prevBalls = inn.balls;
   if (
-    ev.countsBall && // this event counted as a legal ball
+    normalizedEv.countsBall && // this event counted as a legal ball
     prevBalls % 6 !== 0 && // previous balls were not already at a boundary
     next.balls % 6 === 0 && // now we've reached a multiple of 6 → over complete
     next.overEvents.length
@@ -416,8 +512,8 @@ function applyBallEvent(inn: Innings, ev: BallEvent): Innings {
   }
 
   // Track bowler balls (only legal balls)
-  if (ev.countsBall) {
-    const bowler = inn.bowler;
+  if (normalizedEv.countsBall) {
+    const bowler = bowlerAtEvent;
     const current = next.bowlerBalls[bowler] ?? 0;
 
     next.bowlerBalls = {
@@ -448,6 +544,25 @@ function pillTone(ev: BallEvent) {
   return "bg-card text-foreground border";
 }
 
+// Helper: format extras summary string
+function totalExtras(extras: {
+  wide: number;
+  noball: number;
+  bye: number;
+  legbye: number;
+}) {
+  const w = extras?.wide ?? 0;
+  const nb = extras?.noball ?? 0;
+  const b = extras?.bye ?? 0;
+  const lb = extras?.legbye ?? 0;
+  const parts: string[] = [];
+  if (w) parts.push(`Wd ${w}`);
+  if (nb) parts.push(`Nb ${nb}`);
+  if (b) parts.push(`B ${b}`);
+  if (lb) parts.push(`Lb ${lb}`);
+  return parts.length ? parts.join(", ") : "0";
+}
+
 function getQueryParam(search: string, key: string) {
   const params = new URLSearchParams(
     search.startsWith("?") ? search : `?${search}`,
@@ -466,7 +581,9 @@ function setQueryParam(search: string, key: string, value: string | null) {
 }
 
 function getOrigin() {
-  return typeof window === "undefined" ? "http://localhost" : window.location.origin;
+  return typeof window === "undefined"
+    ? "http://localhost"
+    : window.location.origin;
 }
 
 function buildViewerLink(matchId: string) {
@@ -547,17 +664,23 @@ function canCompleteRemainingOvers(
   // All remaining slots filled → feasible
   return true;
 }
+interface ScoringAppProps {
+  matchIdFromRoute?: string;
+}
+function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
+  const [showFullScoreboard, setShowFullScoreboard] = useState(false);
 
-function ScoringApp() {
   console.log("🚀 ScoringApp rendered");
   const { toast } = useToast();
   const [, params] = useRoute<{ matchId: string }>("/match/:matchId");
+  const routeMatchId = params ? params.matchId : null;
+  const matchId = matchIdFromRoute ?? routeMatchId ?? null;
+
   const [location, setLocation] = useLocation();
   const [activeTab, setActiveTab] = useState<"controls" | "players" | "match">(
     "controls",
   );
 
-  const matchIdFromRoute = params ? params.matchId : null;
   const url = useMemo(() => {
     if (typeof window === "undefined") {
       return new URL(`http://localhost${location ?? ""}`);
@@ -571,7 +694,9 @@ function ScoringApp() {
     (getQueryParam(url.search, "mode") as Role | null) ?? "admin";
   // Keep the admin key from the URL stable across renders.
   // (In some cases wouter's location updates can cause search parsing to momentarily drop values.)
-  const [keyFromUrl] = useState<string | null>(() => getQueryParam(url.search, "key"));
+  const [keyFromUrl] = useState<string | null>(() =>
+    getQueryParam(url.search, "key"),
+  );
   const isExplicitAdminRequest = roleFromUrl === "admin";
 
   const [state, setState] = useState<MatchState>(() => {
@@ -665,7 +790,11 @@ function ScoringApp() {
         setCloudSyncStatus("saving");
         setCloudSyncError(null);
 
-        const saved = await saveMatchToCloud(matchIdFromRoute, state, adminKeyForCloud);
+        const saved = await saveMatchToCloud(
+          matchIdFromRoute,
+          state,
+          adminKeyForCloud,
+        );
 
         // Keep local state aligned with server-touched fields (updatedAt)
         setState(saved as any);
@@ -701,8 +830,14 @@ function ScoringApp() {
         const cloud = await fetchMatchFromCloud(matchIdFromRoute);
         if (cancelled || !cloud) return;
 
-        const cloudUpdatedAt = typeof (cloud as any).updatedAt === "number" ? (cloud as any).updatedAt : 0;
-        const localUpdatedAt = typeof (state as any).updatedAt === "number" ? (state as any).updatedAt : 0;
+        const cloudUpdatedAt =
+          typeof (cloud as any).updatedAt === "number"
+            ? (cloud as any).updatedAt
+            : 0;
+        const localUpdatedAt =
+          typeof (state as any).updatedAt === "number"
+            ? (state as any).updatedAt
+            : 0;
 
         // Only apply when cloud is strictly newer
         if (cloudUpdatedAt > localUpdatedAt) {
@@ -918,8 +1053,6 @@ function ScoringApp() {
   }, [currentInnings?.bowlingTeamId, state.teams]);
   const usedBatters = new Set<string>(currentInnings.usedBatters ?? []);
 
-  const bowlerOvers = currentInnings.bowlerBalls ?? {};
-
   const isSkinLocked = currentInnings.ballsInSkin > 0;
   const isMatchCompleted = state.status === "completed";
 
@@ -1064,6 +1197,14 @@ function ScoringApp() {
     setState({ ...next, updatedAt: Date.now() });
   }
 
+  // NEW: scoreboard display (persisted on match state; locked after setup confirmation)
+  const scoreboardDisplay: ScoreboardDisplayType =
+    state.scoreboardDisplay ?? "skins";
+  function setScoreboardDisplay(next: ScoreboardDisplayType) {
+    if (state.setupCompleted) return;
+    safeSet(pushHistory({ ...state, scoreboardDisplay: next }));
+  }
+
   function startMatch() {
     safeSet({ ...pushHistory(state), status: "live" });
   }
@@ -1092,6 +1233,9 @@ function ScoringApp() {
         wickets: 0,
       },
       completedSkins: [],
+
+      // NEW: reset fixed skin assignments
+      batterSkinById: {},
     };
 
     safeSet(
@@ -1166,7 +1310,7 @@ function ScoringApp() {
     });
   }
 
-    function setTeams(a: string, b: string) {
+  function setTeams(a: string, b: string) {
     safeSet(
       pushHistory({
         ...state,
@@ -1176,7 +1320,7 @@ function ScoringApp() {
         },
       }),
     );
-    }
+  }
 
   function setMeta(title: string, venue: string) {
     safeSet(pushHistory({ ...state, title, venue }));
@@ -1188,12 +1332,34 @@ function ScoringApp() {
     bowlerId: string | "",
   ) {
     const inn = state.innings[state.inningsIndex];
+
+    const nextStriker = (strikerId || "").trim();
+    const nextNonStriker = (nonStrikerId || "").trim();
+
+    // Copy existing map
+    let batterSkinById: Record<string, number> = {
+      ...(inn.batterSkinById ?? {}),
+    };
+
+    // If striker doesn't have a skin yet → assign current skin + 1
+    const skinNumber = (inn.skinIndex ?? 0) + 1;
+
+    if (nextStriker && batterSkinById[nextStriker] == null) {
+      batterSkinById[nextStriker] = skinNumber;
+    }
+
+    if (nextNonStriker && batterSkinById[nextNonStriker] == null) {
+      batterSkinById[nextNonStriker] = skinNumber;
+    }
+
     const updated: Innings = {
       ...inn,
-      striker: strikerId || undefined,
-      nonStriker: nonStrikerId || undefined,
+      striker: nextStriker || undefined,
+      nonStriker: nextNonStriker || undefined,
       bowler: bowlerId || undefined,
+      batterSkinById,
     };
+
     const innings = [...state.innings];
     innings[state.inningsIndex] = updated;
     safeSet({ ...state, innings });
@@ -1252,6 +1418,9 @@ function ScoringApp() {
       bowler: "",
       deliveries: 0,
       usedBatters: [],
+
+      // NEW: reset fixed skin assignment map for the new innings
+      batterSkinById: {},
 
       overEvents: [],
       lastOverSummary: [],
@@ -1456,6 +1625,9 @@ function ScoringApp() {
         deliveries: 0,
         usedBatters: [],
 
+        // NEW: reset fixed skin assignment map for the new innings
+        batterSkinById: {},
+
         overEvents: [],
         lastOverSummary: [],
         allBalls: [],
@@ -1533,6 +1705,10 @@ function ScoringApp() {
           countsBall: true,
           isWicket: true,
           note: "Auto OUT (3 dot balls)",
+          strikerAtEvent: inn.striker,
+          nonStrikerAtEvent: inn.nonStriker,
+          bowlerAtEvent: inn.bowler,
+          batterRuns: 0,
         });
         return;
       }
@@ -1543,6 +1719,10 @@ function ScoringApp() {
         type: "dot",
         runs: 0,
         countsBall: true,
+        strikerAtEvent: inn.striker,
+        nonStrikerAtEvent: inn.nonStriker,
+        bowlerAtEvent: inn.bowler,
+        batterRuns: 0,
       });
       return;
     }
@@ -1553,6 +1733,10 @@ function ScoringApp() {
       type: "run",
       runs,
       countsBall: true,
+      strikerAtEvent: inn.striker,
+      nonStrikerAtEvent: inn.nonStriker,
+      bowlerAtEvent: inn.bowler,
+      batterRuns: runs,
     });
   }
 
@@ -1565,7 +1749,7 @@ function ScoringApp() {
   // If your component uses a different state setter name, replace `setState`/`safeSet` with
   // the correct one (e.g. `setMatchState`, `setAppState`, etc.).
   // --- ADD / REPLACE inside ScoringApp component ---
-  // 1) Merge wicket into the last extra of the given type (used by the inline W on extra cards)
+  // 1) Merge wicket into the last extra of `type` (used by the inline W on extra cards)
   // inside ScoringApp: merge wicket into last extra (no appends)
   function addWicketOnExtra(type: "wide" | "noball" | "bye" | "legbye") {
     if (wicketLockRef.current) return;
@@ -1863,6 +2047,10 @@ function ScoringApp() {
       countsBall: true,
       isWicket: true,
       note: "Wicket",
+      strikerAtEvent: inn.striker,
+      nonStrikerAtEvent: inn.nonStriker,
+      bowlerAtEvent: inn.bowler,
+      batterRuns: 0,
     });
   }
   // --- END addWicket() ---
@@ -1901,6 +2089,10 @@ function ScoringApp() {
       type,
       runs: totalRuns,
       countsBall,
+      strikerAtEvent: inn.striker,
+      nonStrikerAtEvent: inn.nonStriker,
+      bowlerAtEvent: inn.bowler,
+      batterRuns: 0,
     });
   }
 
@@ -1920,7 +2112,9 @@ function ScoringApp() {
   const totalScore = `${inningsNet}/${currentInnings.wickets}`;
 
   const oversText = `${formatOvers(currentInnings.balls, state.oversLimit)} ov`;
-  const extrasText = totalExtras(currentInnings.extras);
+  const extrasText = totalExtras(
+    (currentInnings as any).extras ?? { wide: 0, noball: 0, bye: 0, legbye: 0 },
+  );
 
   const isOverLimitReached =
     Math.floor(currentInnings.balls / 6) >= clamp(state.oversLimit, 1, 50);
@@ -2007,7 +2201,7 @@ function ScoringApp() {
     return true;
   }
 
-    function setTeamPlayers(teamId: "a" | "b", players: string[]) {
+  function setTeamPlayers(teamId: "a" | "b", players: string[]) {
     safeSet(
       pushHistory({
         ...state,
@@ -2020,9 +2214,9 @@ function ScoringApp() {
         },
       }),
     );
-    }
+  }
 
-    const rosterTeams = useMemo(() => {
+  const rosterTeams = useMemo(() => {
     const entries = Object.entries(state.teams ?? {}).map(([teamId, t]) => {
       const playersMap = Array.isArray(t.players)
         ? Object.fromEntries(
@@ -2038,7 +2232,7 @@ function ScoringApp() {
     });
 
     return Object.fromEntries(entries);
-    }, [state.teams]);
+  }, [state.teams]);
 
   return (
     <div className="app-shell min-h-screen">
@@ -2121,7 +2315,7 @@ function ScoringApp() {
                       {/* Skin only shown after setup/when live */}
                       {(state.setupCompleted || state.status !== "setup") && (
                         <span className="rounded-md px-2 py-1 text-xs bg-muted/30">
-                          {`Skin ${ currentInnings.skinIndex + 1} / ${TOTAL_SKINS}`}
+                          {`Skin ${currentInnings.skinIndex + 1} / ${TOTAL_SKINS}`}
                         </span>
                       )}
 
@@ -2266,8 +2460,8 @@ function ScoringApp() {
                           key.
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          Ask the scorer for an Admin link, or use the Viewer link
-                          to follow along.
+                          Ask the scorer for an Admin link, or use the Viewer
+                          link to follow along.
                         </p>
                       </>
                     ) : (
@@ -2343,27 +2537,22 @@ function ScoringApp() {
                       <Undo2 className="h-5 w-5" />
                     </Button>
 
-                    {/* Reset: desktop (text + icon) */}
                     <Button
                       variant="outline"
-                      className="hidden sm:inline-flex tap pressable items-center gap-2"
-                      disabled={isMatchCompleted}
-                      onClick={() => setShowResetConfirm(true)}
-                      data-testid="button-reset"
+                      className="tap pressable font-medium"
+                      disabled={
+                        !isAdmin ||
+                        !state.setupCompleted ||
+                        needsBowlerSelection ||
+                        isOverBreak ||
+                        isSkinBreak ||
+                        !isReadyToScore ||
+                        isMatchCompleted
+                      }
+                      onClick={swapBatters}
+                      data-testid="button-swap-batters"
                     >
-                      <RotateCcw className="h-4 w-4" /> Reset
-                    </Button>
-
-                    {/* Reset: mobile (icon only) */}
-                    <Button
-                      variant="outline"
-                      className="inline-flex sm:hidden tap pressable items-center"
-                      disabled={isMatchCompleted}
-                      onClick={() => setShowResetConfirm(true)}
-                      aria-label="Reset"
-                      data-testid="button-reset-mobile"
-                    >
-                      <RotateCcw className="h-5 w-5" />
+                      🔁 Change Strike
                     </Button>
                   </div>
                 </div>
@@ -2483,7 +2672,7 @@ function ScoringApp() {
 
                     <BigButton
                       label="6"
-                      sub="Max"
+                      sub="Runs"
                       tone="accent"
                       disabled={
                         !isAdmin ||
@@ -2496,6 +2685,23 @@ function ScoringApp() {
                       }
                       onClick={() => addRun(6)}
                       testId="button-run-6"
+                    />
+
+                    <BigButton
+                      label="7"
+                      sub="Max"
+                      tone="accent"
+                      disabled={
+                        !isAdmin ||
+                        !state.setupCompleted ||
+                        needsBowlerSelection ||
+                        isOverBreak ||
+                        isSkinBreak ||
+                        !isReadyToScore ||
+                        isMatchCompleted
+                      }
+                      onClick={() => addRun(7)}
+                      testId="button-run-7"
                     />
                   </div>
 
@@ -2520,163 +2726,182 @@ function ScoringApp() {
                     {/* 2) Replace your Wide Card with this */}
                     {/* --- REPLACE: Wide Card block --- */}
                     {/* Wide card — badge positioned absolutely on card so it cannot be clipped */}
-                    <Card className="bg-card/60 border p-3 relative">
-                      <p className="text-sm font-semibold">Wide</p>
+                    <Card className="bg-card/60 border p-3">
+                      {/* Header row */}
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-semibold">Wide</p>
 
-                      <div className="mt-2 relative">
-                        <Button
-                          variant="secondary"
-                          className="tap pressable h-10 w-full rounded-xl mb-2 inline-flex items-center justify-center"
-                          disabled={
-                            !isAdmin ||
-                            !state.setupCompleted ||
-                            needsBowlerSelection ||
-                            isOverBreak ||
-                            isSkinBreak ||
-                            !isReadyToScore ||
-                            isMatchCompleted
-                          }
-                          onClick={() => addExtra("wide", 0)}
+                        <button
+                          type="button"
+                          className={`h-6 w-6 rounded-full border text-xs font-semibold transition
+        ${
+          isExtraMarkedWicket(currentInnings, "wide")
+            ? "border-red-600 text-red-600 bg-red-50"
+            : "border-gray-300 text-gray-400 hover:border-red-400 hover:text-red-500"
+        }
+      `}
+                          title="Wicket on this extra"
+                          aria-label="Wicket on this extra"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            addWicketOnExtra("wide");
+                          }}
+                          disabled={!canAttachWicketToLast("wide")}
                         >
-                          Wide (+2)
-                        </Button>
+                          W
+                        </button>
+                      </div>
 
-                        {/* Inline W to attach wicket to this extra (same delivery) */}
-                        {!isExtraMarkedWicket(currentInnings, "wide") ? (
-                          <button
-                            type="button"
-                            className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow z-20"
-                            title="Wicket on this extra"
-                            aria-label="Wicket on this extra"
-                            onClick={(
-                              e: React.MouseEvent<HTMLButtonElement>,
-                            ) => {
-                              e.stopPropagation();
-                              addWicketOnExtra("wide");
-                            }}
-                            // enable iff the last event is attachable (this allows clicking during over-break)
-                            disabled={!canAttachWicketToLast("wide")}
+                      {/* Main Wide Button */}
+                      <Button
+                        variant="secondary"
+                        className="tap pressable h-10 w-full rounded-xl mt-2"
+                        disabled={
+                          !isAdmin ||
+                          !state.setupCompleted ||
+                          needsBowlerSelection ||
+                          isOverBreak ||
+                          isSkinBreak ||
+                          !isReadyToScore ||
+                          isMatchCompleted
+                        }
+                        onClick={() => addExtra("wide", 0)}
+                      >
+                        Wide (+2)
+                      </Button>
+
+                      {/* Extra runs grid */}
+                      <div className="grid grid-cols-4 gap-1 mt-2">
+                        {[1, 2, 3, 4].map((n) => (
+                          <Button
+                            key={n}
+                            variant="secondary"
+                            className="tap pressable h-10 rounded-xl px-0"
+                            disabled={
+                              !isAdmin ||
+                              !state.setupCompleted ||
+                              needsBowlerSelection ||
+                              isOverBreak ||
+                              isSkinBreak ||
+                              !isReadyToScore ||
+                              isMatchCompleted
+                            }
+                            onClick={() => addExtra("wide", n)}
                           >
-                            W
-                          </button>
-                        ) : null}
-                        <div className="grid grid-cols-4 gap-1 mt-2">
-                          {[1, 2, 3, 4].map((n) => (
-                            <Button
-                              key={n}
-                              variant="secondary"
-                              className="tap pressable h-10 rounded-xl px-0"
-                              disabled={
-                                !isAdmin ||
-                                !state.setupCompleted ||
-                                needsBowlerSelection ||
-                                isOverBreak ||
-                                isSkinBreak ||
-                                !isReadyToScore ||
-                                isMatchCompleted
-                              }
-                              onClick={() => addExtra("wide", n)}
-                            >
-                              +{n}
-                            </Button>
-                          ))}
-                        </div>
-                        {isExtraMarkedWicket(currentInnings, "wide") ? (
-                          <span
-                            className="w-badge-abs absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
-                            aria-hidden
-                          >
-                            W
-                          </span>
-                        ) : null}
+                            +{n}
+                          </Button>
+                        ))}
                       </div>
                     </Card>
+
                     {/* --- END Wide Card block --- */}
 
                     {/* 3) Replace your No Ball Card with this */}
                     {/* --- REPLACE: No Ball Card block --- */}
                     {/* No Ball card — badge positioned absolutely on card so it cannot be clipped */}
-                    <Card className="bg-card/60 border p-3 relative">
-                      <p className="text-sm font-semibold">No Ball</p>
+                    <Card className="bg-card/60 border p-3">
+                      {/* Header row */}
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-semibold">No Ball</p>
 
-                      <div className="mt-2 relative">
-                        <Button
-                          variant="secondary"
-                          className="tap pressable h-10 w-full rounded-xl mb-2 inline-flex items-center justify-center"
-                          disabled={
-                            !isAdmin ||
-                            !state.setupCompleted ||
-                            needsBowlerSelection ||
-                            isOverBreak ||
-                            isSkinBreak ||
-                            !isReadyToScore ||
-                            isMatchCompleted
-                          }
-                          onClick={() => addExtra("noball", 0)}
+                        <button
+                          type="button"
+                          className={`h-6 w-6 rounded-full border text-xs font-semibold transition
+        ${
+          isExtraMarkedWicket(currentInnings, "noball")
+            ? "border-red-600 text-red-600 bg-red-50"
+            : "border-gray-300 text-gray-400 hover:border-red-400 hover:text-red-500"
+        }
+      `}
+                          title="Wicket on this extra"
+                          aria-label="Wicket on this extra"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            addWicketOnExtra("noball");
+                          }}
+                          disabled={!canAttachWicketToLast("noball")}
                         >
-                          No Ball (+2)
-                        </Button>
+                          W
+                        </button>
+                      </div>
 
-                        {/* Inline W to attach wicket to this extra (same delivery) */}
-                        {!isExtraMarkedWicket(currentInnings, "noball") ? (
-                          <button
-                            type="button"
-                            className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow z-20"
-                            title="Wicket on this extra"
-                            aria-label="Wicket on this extra"
-                            onClick={(
-                              e: React.MouseEvent<HTMLButtonElement>,
-                            ) => {
-                              e.stopPropagation();
-                              addWicketOnExtra("noball");
-                            }}
-                            disabled={!canAttachWicketToLast("noball")}
-                          >
-                            W
-                          </button>
-                        ) : null}
+                      {/* Main No Ball Button */}
+                      <Button
+                        variant="secondary"
+                        className="tap pressable h-10 w-full rounded-xl mt-2"
+                        disabled={
+                          !isAdmin ||
+                          !state.setupCompleted ||
+                          needsBowlerSelection ||
+                          isOverBreak ||
+                          isSkinBreak ||
+                          !isReadyToScore ||
+                          isMatchCompleted
+                        }
+                        onClick={() => addExtra("noball", 0)}
+                      >
+                        No Ball (+2)
+                      </Button>
 
-                        <div className="grid grid-cols-4 gap-1 mt-2">
-                          {[1, 2, 3, 4].map((n) => (
-                            <Button
-                              key={n}
-                              variant="secondary"
-                              className="tap pressable h-10 rounded-xl px-0"
-                              disabled={
-                                !isAdmin ||
-                                !state.setupCompleted ||
-                                needsBowlerSelection ||
-                                isOverBreak ||
-                                isSkinBreak ||
-                                !isReadyToScore ||
-                                isMatchCompleted
-                              }
-                              onClick={() => addExtra("noball", n)}
-                            >
-                              +{n}
-                            </Button>
-                          ))}
-                        </div>
-                        {isExtraMarkedWicket(currentInnings, "noball") ? (
-                          <span
-                            className="w-badge-abs absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow"
-                            aria-hidden
+                      {/* Extra runs grid */}
+                      <div className="grid grid-cols-4 gap-1 mt-2">
+                        {[1, 2, 3, 4].map((n) => (
+                          <Button
+                            key={n}
+                            variant="secondary"
+                            className="tap pressable h-10 rounded-xl px-0"
+                            disabled={
+                              !isAdmin ||
+                              !state.setupCompleted ||
+                              needsBowlerSelection ||
+                              isOverBreak ||
+                              isSkinBreak ||
+                              !isReadyToScore ||
+                              isMatchCompleted
+                            }
+                            onClick={() => addExtra("noball", n)}
                           >
-                            W
-                          </span>
-                        ) : null}
+                            +{n}
+                          </Button>
+                        ))}
                       </div>
                     </Card>
+
                     {/* --- END No Ball Card block --- */}
                     {/* --- REPLACE: Bye/LB SmallStepper + Wicket button --- */}
                     {/* Bye/LB + inline wicket button (centered) */}
                     {/* Bye/LB — place inline W absolutely so it stays aligned */}
-                    <div className="mt-2 relative pt-6">
-                      {" "}
-                      {/* <-- add top padding to reserve header area */}
-                      <div className="min-w-0">
+                    <Card className="bg-card/60 border p-3">
+                      {/* Header row */}
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-semibold">Bye / LB</p>
+
+                        <button
+                          type="button"
+                          className={`h-6 w-6 rounded-full border text-xs font-semibold transition
+        ${
+          isExtraMarkedWicket(currentInnings, "bye") ||
+          isExtraMarkedWicket(currentInnings, "legbye")
+            ? "border-red-600 text-red-600 bg-red-50"
+            : "border-gray-300 text-gray-400 hover:border-red-400 hover:text-red-500"
+        }
+      `}
+                          aria-label="Wicket on Bye/Legbye"
+                          title="Wicket on this extra"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            addWicketToLastByeOrLegbye();
+                          }}
+                          disabled={!canAttachWicketToLast("bye")}
+                        >
+                          W
+                        </button>
+                      </div>
+
+                      {/* Small stepper */}
+                      <div className="mt-2">
                         <SmallStepper
-                          title="Bye/LB"
+                          title=""
                           onAdd={(n) => addExtra("bye", n)}
                           disabled={
                             !isAdmin ||
@@ -2693,55 +2918,33 @@ function ScoringApp() {
                           altLabel="Leg bye"
                         />
                       </div>
-                      {/* Inline W button (hidden once extra is marked) */}
-                      {!isExtraMarkedWicket(currentInnings, "bye") &&
-                      !isExtraMarkedWicket(currentInnings, "legbye") ? (
-                        <button
-                          type="button"
-                          className="absolute right-3 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow z-20"
-                          aria-label="Wicket on Bye/Legbye"
-                          title="Wicket on this extra"
-                          onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
-                            e.stopPropagation();
-                            addWicketToLastByeOrLegbye();
-                          }}
-                          disabled={!canAttachWicketToLast("bye")}
-                        >
-                          W
-                        </button>
-                      ) : null}
-                      {/* Persistent W badge (top-left) — positioned using top/left that match the header area */}
-                      {isExtraMarkedWicket(currentInnings, "bye") ||
-                      isExtraMarkedWicket(currentInnings, "legbye") ? (
-                        <span
-                          className="absolute left-3 top-2 inline-flex items-center justify-center w-6 h-6 rounded-full bg-destructive text-destructive-foreground text-xs font-semibold shadow pointer-events-none"
-                          aria-hidden
-                        >
-                          W
-                        </span>
-                      ) : null}
-                    </div>
+                    </Card>
                   </div>
                   {/* --- END Bye/LB SmallStepper + Wicket button --- */}
 
                   <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
+                      {/* Reset: desktop (text + icon) */}
                       <Button
-                        variant="secondary"
-                        className="tap pressable"
-                        disabled={
-                          !isAdmin ||
-                          !state.setupCompleted ||
-                          needsBowlerSelection ||
-                          isOverBreak ||
-                          isSkinBreak ||
-                          !isReadyToScore ||
-                          isMatchCompleted
-                        }
-                        onClick={swapBatters}
-                        data-testid="button-swap-batters"
+                        variant="outline"
+                        className="hidden sm:inline-flex tap pressable items-center gap-2"
+                        disabled={isMatchCompleted}
+                        onClick={() => setShowResetConfirm(true)}
+                        data-testid="button-reset"
                       >
-                        Swap batters
+                        <RotateCcw className="h-4 w-4" /> Reset
+                      </Button>
+
+                      {/* Reset: mobile (icon only) */}
+                      <Button
+                        variant="outline"
+                        className="inline-flex sm:hidden tap pressable items-center"
+                        disabled={isMatchCompleted}
+                        onClick={() => setShowResetConfirm(true)}
+                        aria-label="Reset"
+                        data-testid="button-reset-mobile"
+                      >
+                        <RotateCcw className="h-5 w-5" />
                       </Button>
                       <div className="flex items-center gap-2 rounded-xl border bg-card/60 px-3 py-2">
                         <span
@@ -2873,9 +3076,7 @@ function ScoringApp() {
                             <option
                               key={playerKey}
                               value={playerKey}
-                              disabled={
-                                playerKey === currentInnings.nonStriker
-                              }
+                              disabled={playerKey === currentInnings.nonStriker}
                             >
                               {label}{" "}
                               {usedBatters.has(playerKey) ? "(used)" : ""}
@@ -2928,9 +3129,7 @@ function ScoringApp() {
                             <option
                               key={playerKey}
                               value={playerKey}
-                              disabled={
-                                playerKey === currentInnings.striker
-                              }
+                              disabled={playerKey === currentInnings.striker}
                             >
                               {label}{" "}
                               {usedBatters.has(playerKey) ? "(used)" : ""}
@@ -3124,6 +3323,7 @@ function ScoringApp() {
                       testId="input-team-b"
                     />
                   </div>
+
                   {/* Team Players Setup */}
                   <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="space-y-2">
@@ -3155,219 +3355,142 @@ function ScoringApp() {
                     </div>
                   </div>
 
-                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <OverLimitControl
-                      value={state.oversLimit}
-                      disabled={!isAdmin || state.setupCompleted}
-                      onChange={(v) =>
-                        safeSet(
-                          pushHistory({
-                            ...state,
-                            oversLimit: clamp(v, 1, 50),
-                          }),
-                        )
-                      }
-                    />
-                    {/* Toss controls */}
-                    {/* Robust Toss card — adaptive grid to avoid overlap */}
-                    {/* Reliable Toss card — flex layout, wraps when space is tight */}
-                    {/* Toss card — improved accessibility: ids, htmlFor, title, focus rings, aria-live */}
-                    <Card className="bg-card/60 border p-3 sm:col-span-2">
-                      <div className="flex flex-wrap items-start gap-3">
-                        {/* Left: selects row that fills available space */}
-                        <div className="flex-1 min-w-0 flex gap-3">
-                          {/* Toss winner */}
-                          <div className="flex-1 min-w-0">
-                            <label
-                              htmlFor="toss-winner-select"
-                              className="text-sm font-semibold mb-1 inline-block"
-                            >
-                              Toss winner
-                            </label>
-                            <select
-                              id="toss-winner-select"
-                              className="h-11 w-full rounded-xl border bg-card/70 px-4 pr-10 min-w-0 focus:outline-none focus:ring-2 focus:ring-primary/40"
-                              title={
-                                tossWinnerSel
-                                  ? state.teams[tossWinnerSel].name
-                                  : "Select toss winner"
-                              }
-                              value={tossWinnerSel}
-                              onChange={(e) =>
-                                setTossWinnerSel(
-                                  e.target.value as "a" | "b" | "",
-                                )
-                              }
-                              data-testid="select-toss-winner"
-                            >
-                              <option value="">Select</option>
-                              <option value="a">{state.teams.a.name}</option>
-                              <option value="b">{state.teams.b.name}</option>
-                            </select>
-                          </div>
-
-                          {/* Choice */}
-                          <div className="flex-1 min-w-0">
-                            <label
-                              htmlFor="toss-choice-select"
-                              className="text-sm font-semibold mb-1 inline-block"
-                            >
-                              Choice
-                            </label>
-                            <select
-                              id="toss-choice-select"
-                              className="h-11 w-full rounded-xl border bg-card/70 px-4 pr-10 min-w-0 focus:outline-none focus:ring-2 focus:ring-primary/40"
-                              title={
-                                tossChoiceSel ? tossChoiceSel : "Select choice"
-                              }
-                              value={tossChoiceSel}
-                              onChange={(e) =>
-                                setTossChoiceSel(
-                                  e.target.value as "bat" | "bowl" | "",
-                                )
-                              }
-                              data-testid="select-toss-choice"
-                            >
-                              <option value="">Select</option>
-                              <option value="bat">Bat</option>
-                              <option value="bowl">Bowl</option>
-                            </select>
-                          </div>
-                        </div>
-
-                        {/* Right: apply button never shrinks; wraps below if not enough horizontal space */}
-                        <div className="flex-shrink-0 self-end">
-                          <Button
-                            variant="secondary"
-                            className="h-11 focus:outline-none focus:ring-2 focus:ring-primary/40"
-                            onClick={applyToss}
-                            disabled={
-                              !isAdmin || !tossWinnerSel || !tossChoiceSel
-                            }
-                            data-testid="button-apply-toss"
-                          >
-                            Apply Toss
-                          </Button>
-                        </div>
-
-                        {/* Summary — full width underneath; announce changes for assistive tech */}
-                        <div
-                          className="w-full mt-2"
-                          aria-live="polite"
-                          role="status"
+                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-[auto,1fr] gap-3">
+                    {/* Overs limit */}
+                    <Card className="bg-card/60 border p-3">
+                      <p className="text-sm font-semibold">Overs limit</p>
+                      <p className="text-xs text-muted-foreground">
+                        Typical indoor: 16 overs.
+                      </p>
+                      <div className="mt-3 flex items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="tap pressable"
+                          disabled={
+                            !isAdmin ||
+                            state.setupCompleted ||
+                            state.oversLimit <= 1
+                          }
+                          onClick={() => {
+                            safeSet(
+                              pushHistory({
+                                ...state,
+                                oversLimit: clamp(
+                                  (state.oversLimit ?? 16) - 1,
+                                  1,
+                                  50,
+                                ),
+                              }),
+                            );
+                          }}
+                          data-testid="button-overs-minus"
                         >
-                          <div className="rounded-md border bg-muted/5 px-3 py-2 text-sm text-muted-foreground min-w-0">
-                            {state.tossWinner && state.tossChoice ? (
-                              <span data-testid="text-toss-summary">
-                                <strong className="font-semibold">
-                                  {state.teams[state.tossWinner].name}
-                                </strong>{" "}
-                                won the toss and chose to {state.tossChoice}.
-                              </span>
-                            ) : (
-                              <span className="text-muted-foreground">
-                                No toss recorded
-                              </span>
-                            )}
-                          </div>
+                          -
+                        </Button>
+                        <div
+                          className="min-w-[3rem] text-center text-sm font-semibold"
+                          data-testid="text-overs-limit"
+                        >
+                          {state.oversLimit}
                         </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="tap pressable"
+                          disabled={!isAdmin || state.setupCompleted}
+                          onClick={() => {
+                            safeSet(
+                              pushHistory({
+                                ...state,
+                                oversLimit: clamp(
+                                  (state.oversLimit ?? 16) + 1,
+                                  1,
+                                  50,
+                                ),
+                              }),
+                            );
+                          }}
+                          data-testid="button-overs-plus"
+                        >
+                          +
+                        </Button>
                       </div>
                     </Card>
-                    <div className="sm:col-span-3">
-                      <Button
-                        className="w-full tap pressable"
-                        disabled={!isAdmin || state.setupCompleted}
-                        onClick={confirmMatchSetup}
-                      >
-                        {state.setupCompleted
-                          ? "Match Setup Confirmed"
-                          : "Confirm Match Details"}
-                      </Button>
-                    </div>
 
-                    <Card className="bg-card/60 border p-3 sm:col-span-2">
-                      <p
-                        className="text-sm font-semibold"
-                        data-testid="text-share-heading"
-                      >
-                        Share links
-                      </p>
-                      <p
-                        className="mt-1 text-xs text-muted-foreground"
-                        data-testid="text-share-sub"
-                      >
-                        Viewer is read-only. Admin requires the key.
-                      </p>
-                      <div className="mt-3 flex flex-col gap-2">
-                        <div className="flex gap-2">
-                          <Button
-                            variant="secondary"
-                            className="tap pressable w-full justify-center"
-                            onClick={() =>
-                              copy(viewerLink, "Viewer link copied")
-                            }
-                            data-testid="button-share-viewer"
-                          >
-                            <Eye className="h-4 w-4" /> Copy viewer link
-                          </Button>
-                          <Button
-                            variant="outline"
-                            className="tap pressable w-full justify-center"
-                            onClick={() => copy(adminLink, "Admin link copied")}
-                            disabled={!isAdmin}
-                            data-testid="button-share-admin"
-                          >
-                            <Crown className="h-4 w-4" /> Copy admin link
-                          </Button>
-                        </div>
-
-                        <div
-                          className="rounded-xl border bg-card/60 p-2 text-xs text-muted-foreground break-all"
-                          data-testid="text-viewer-link"
-                        >
-                          {viewerLink}
-                        </div>
-                      </div>
-
-                      <div className="mt-4 flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2">
-                          <Label
-                            className="text-sm"
-                            htmlFor="toggle-viewer"
-                            data-testid="label-viewer-mode"
-                          >
-                            Viewer mode
+                    {/* Toss */}
+                    <Card className="bg-card/60 border p-3">
+                      <p className="text-sm font-semibold">Toss</p>
+                      <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">
+                            Toss winner
                           </Label>
-                          <Switch
-                            id="toggle-viewer"
-                            checked={role === "viewer"}
-                            onCheckedChange={(checked) => {
-                              const nextMode: Role = checked
-                                ? "viewer"
-                                : "admin";
-                              const nextSearch =
-                                nextMode === "viewer"
-                                  ? setQueryParam(url.search, "mode", "viewer")
-                                  : setQueryParam(
-                                      setQueryParam(
-                                        url.search,
-                                        "mode",
-                                        "admin",
-                                      ),
-                                      "key",
-                                      state.adminKey,
-                                    );
-                              setLocation(
-                                `/match/${encodeURIComponent(state.matchId)}${nextSearch}`,
-                              );
-                            }}
-                            disabled={!isAdmin}
-                            data-testid="switch-viewer-mode"
-                          />
+                          <select
+                            className="w-full rounded-xl border bg-card/70 px-3 py-2 text-sm"
+                            disabled={!isAdmin || state.setupCompleted}
+                            value={tossWinnerSel}
+                            onChange={(e) =>
+                              setTossWinnerSel(e.target.value as any)
+                            }
+                            data-testid="select-toss-winner"
+                          >
+                            <option value="">Select</option>
+                            <option value="a">{state.teams.a.name}</option>
+                            <option value="b">{state.teams.b.name}</option>
+                          </select>
                         </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">
+                            Choice
+                          </Label>
+                          <select
+                            className="w-full rounded-xl border bg-card/70 px-3 py-2 text-sm"
+                            disabled={!isAdmin || state.setupCompleted}
+                            value={tossChoiceSel}
+                            onChange={(e) =>
+                              setTossChoiceSel(e.target.value as any)
+                            }
+                            data-testid="select-toss-choice"
+                          >
+                            <option value="">Select</option>
+                            <option value="bat">Bat</option>
+                            <option value="bowl">Bowl</option>
+                          </select>
+                        </div>
+                        <Button
+                          type="button"
+                          className="w-full tap pressable"
+                          disabled={!isAdmin || state.setupCompleted}
+                          onClick={applyToss}
+                          data-testid="button-apply-toss"
+                        >
+                          Apply Toss
+                        </Button>
+                      </div>
+                      <div
+                        className="mt-3 rounded-xl border bg-card/40 px-3 py-2 text-sm"
+                        data-testid="text-toss-summary"
+                      >
+                        {state.tossWinner
+                          ? `Toss: ${state.teams[state.tossWinner].name} won${
+                              state.tossChoice
+                                ? ` and chose to ${state.tossChoice}`
+                                : ""
+                            }`
+                          : "No toss recorded"}
                       </div>
                     </Card>
                   </div>
+
+                  <Button
+                    className="mt-4 w-full"
+                    disabled={!isAdmin || state.setupCompleted}
+                    onClick={confirmMatchSetup}
+                    data-testid="button-confirm-match-details"
+                  >
+                    Confirm Match Details
+                  </Button>
                 </TabsContent>
               </Tabs>
             </Card>
@@ -3385,7 +3508,9 @@ function ScoringApp() {
                     <div className="font-medium">
                       {state.tossWinner
                         ? `Toss: ${state.teams[state.tossWinner].name} won${
-                            state.tossChoice ? ` and chose to ${state.tossChoice}` : ""
+                            state.tossChoice
+                              ? ` and chose to ${state.tossChoice}`
+                              : ""
                           }`
                         : "Toss: —"}
                     </div>
@@ -3459,7 +3584,9 @@ function ScoringApp() {
                         lines.push(
                           state.tossWinner
                             ? `Toss: ${state.teams[state.tossWinner].name} won${
-                                state.tossChoice ? ` and chose to ${state.tossChoice}` : ""
+                                state.tossChoice
+                                  ? ` and chose to ${state.tossChoice}`
+                                  : ""
                               }`
                             : `Toss: —`,
                         );
@@ -3523,197 +3650,155 @@ function ScoringApp() {
                 </div>
               </div>
             </Card>
-            <Card className="glass p-4 sm:p-6">
-              <p className="text-sm font-semibold mb-3">Skin-wise Comparison</p>
 
-              <div className="grid grid-cols-4 text-sm font-semibold border-b pb-2">
-                <div>Skin</div>
-                <div className="text-center">{state.teams.a.name}</div>
-                <div className="text-center">{state.teams.b.name}</div>
-                <div className="text-center">Winner</div>
-              </div>
+            {/* Scoreboard display (right column) */}
+            {scoreboardDisplay === "traditional" ? (
+              <TraditionalScoreboardCard
+                state={state}
+                teamAName={state.teams.a.name}
+                teamBName={state.teams.b.name}
+                inningsA={state.innings[0] ?? null}
+                inningsB={state.innings[1] ?? null}
+                showFullScoreboard={showFullScoreboard}
+                setShowFullScoreboard={setShowFullScoreboard}
+              />
+            ) : (
+              <Card className="glass p-4 sm:p-6">
+                <p className="text-sm font-semibold mb-3">
+                  Skin-wise Comparison
+                </p>
 
-              {[0, 1, 2, 3].map((skin) => {
-                function getSkinNet(
-                  inn: Innings | undefined,
-                  skinIndex: number,
-                ): number | null {
-                  if (!inn) return null;
+                <div className="grid grid-cols-4 text-sm font-semibold border-b pb-2">
+                  <div>Skin</div>
+                  <div className="text-center">{state.teams.a.name}</div>
+                  <div className="text-center">{state.teams.b.name}</div>
+                  <div className="text-center">Winner</div>
+                </div>
 
-                  // If there are no events at all in this innings and no completed skins,
-                  // treat the skin as not-yet-started → return null (so UI shows —)
-                  if (
-                    (inn.deliveries ?? 0) === 0 &&
-                    (inn.completedSkins?.length ?? 0) === 0
-                  ) {
+                {[0, 1, 2, 3].map((skin) => {
+                  function getSkinNet(
+                    inn: Innings | undefined,
+                    skinIndex: number,
+                  ): number | null {
+                    if (!inn) return null;
+
+                    // If there are no events at all in this innings and no completed skins,
+                    // treat the skin as not-yet-started → return null (so UI shows —)
+                    if (
+                      (inn.deliveries ?? 0) === 0 &&
+                      (inn.completedSkins?.length ?? 0) === 0
+                    ) {
+                      return null;
+                    }
+
+                    // Completed skin
+                    if (inn.completedSkins?.[skinIndex]) {
+                      return inn.completedSkins[skinIndex].netRuns;
+                    }
+
+                    // Live skin: only show live net if this is the active skin and there have been deliveries
+                    if (inn.skinIndex === skinIndex) {
+                      return computeLiveSkinNet(inn);
+                    }
+
                     return null;
                   }
 
-                  // Completed skin
-                  if (inn.completedSkins?.[skinIndex]) {
-                    return inn.completedSkins[skinIndex].netRuns;
+                  const aNet = getSkinNet(state.innings[0], skin);
+                  const bNet = getSkinNet(state.innings[1], skin);
+
+                  // Only declare a winner after BOTH teams have completed this skin.
+                  const aCompleted = !!state.innings[0]?.completedSkins?.[skin];
+                  const bCompleted = !!state.innings[1]?.completedSkins?.[skin];
+
+                  let winner = "—";
+
+                  if (
+                    aNet !== null &&
+                    bNet !== null &&
+                    aCompleted &&
+                    bCompleted
+                  ) {
+                    if (aNet > bNet) {
+                      winner = state.teams.a.name;
+                    } else if (bNet > aNet) {
+                      winner = state.teams.b.name;
+                    } else {
+                      winner = "Tie";
+                    }
                   }
 
-                  // Live skin: only show live net if this is the active skin and there have been deliveries
-                  if (inn.skinIndex === skinIndex) {
-                    return computeLiveSkinNet(inn);
-                  }
+                  // helper to read finishing pair (if any) for an innings' completed skin
+                  const finishingPairFor = (innIdx: 0 | 1) => {
+                    const innings = state.innings[innIdx];
+                    const entry = innings?.completedSkins?.[skin];
+                    return entry?.batters && entry.batters.length
+                      ? entry.batters
+                      : null;
+                  };
 
-                  return null;
-                }
+                  const aPair = finishingPairFor(0);
+                  const bPair = finishingPairFor(1);
 
-                const aNet = getSkinNet(state.innings[0], skin);
-                const bNet = getSkinNet(state.innings[1], skin);
+                  return (
+                    <div
+                      key={skin}
+                      className="grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 py-2 border-b"
+                    >
+                      <div>Skin {skin + 1}</div>
 
-                // Only declare a winner after BOTH teams have completed this skin.
-                const aCompleted = !!state.innings[0]?.completedSkins?.[skin];
-                const bCompleted = !!state.innings[1]?.completedSkins?.[skin];
-
-                let winner = "—";
-
-                if (
-                  aNet !== null &&
-                  bNet !== null &&
-                  aCompleted &&
-                  bCompleted
-                ) {
-                  if (aNet > bNet) winner = state.teams.a.name;
-                  else if (bNet > aNet) winner = state.teams.b.name;
-                  else winner = "Tie";
-                }
-
-                // helper to read finishing pair (if any) for an innings' completed skin
-                const finishingPairFor = (innIdx: 0 | 1) => {
-                  const innings = state.innings[innIdx];
-                  const entry = innings?.completedSkins?.[skin];
-                  return entry?.batters && entry.batters.length
-                    ? entry.batters
-                    : null;
-                };
-
-                const aPair = finishingPairFor(0);
-                const bPair = finishingPairFor(1);
-
-                return (
-                  <div
-                    key={skin}
-                    className="grid grid-cols-4 text-sm py-2 border-b"
-                  >
-                    <div>Skin {skin + 1}</div>
-
-                    {/* Team A: net + finishing pair (if completed) */}
-                    <div className="text-center">
-                      {aNet ?? "—"}
-                      {aCompleted && aPair ? (
-                        <div
-                          className="text-xs text-muted-foreground mt-1"
-                          title={aPair.join(", ")}
-                        >
-                          <span
-                            style={{
-                              whiteSpace: "nowrap",
-                              display: "inline-block",
-                              maxWidth: "160px",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
+                      {/* Team A: net + finishing pair (if completed) */}
+                      <div className="text-center">
+                        {aNet ?? "—"}
+                        {aCompleted && aPair ? (
+                          <div
+                            className="text-xs text-muted-foreground mt-1"
+                            title={aPair.join(", ")}
                           >
-                            {aPair.join(" · ")}
-                          </span>
-                        </div>
-                      ) : null}
-                    </div>
+                            <span
+                              style={{
+                                whiteSpace: "nowrap",
+                                display: "inline-block",
+                                maxWidth: "160px",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}
+                            >
+                              {aPair.join(" · ")}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
 
-                    {/* Team B: net + finishing pair (if completed) */}
-                    <div className="text-center">
-                      {bNet ?? "—"}
-                      {bCompleted && bPair ? (
-                        <div
-                          className="text-xs text-muted-foreground mt-1"
-                          title={bPair.join(", ")}
-                        >
-                          <span
-                            style={{
-                              whiteSpace: "nowrap",
-                              display: "inline-block",
-                              maxWidth: "160px",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
+                      {/* Team B: net + finishing pair (if completed) */}
+                      <div className="text-center">
+                        {bNet ?? "—"}
+                        {bCompleted && bPair ? (
+                          <div
+                            className="text-xs text-muted-foreground mt-1"
+                            title={bPair.join(", ")}
                           >
-                            {bPair.join(" · ")}
-                          </span>
-                        </div>
-                      ) : null}
+                            <span
+                              style={{
+                                whiteSpace: "nowrap",
+                                display: "inline-block",
+                                maxWidth: "160px",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}
+                            >
+                              {bPair.join(" · ")}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="text-center">{winner}</div>
                     </div>
-
-                    <div className="text-center">{winner}</div>
-                  </div>
-                );
-              })}
-            </Card>
-
-            <Card className="glass p-4 sm:p-6">
-              <p
-                className="text-sm font-semibold"
-                data-testid="text-mode-heading"
-              >
-                Mode
-              </p>
-              <div className="mt-2 flex items-center justify-between gap-3">
-                <div>
-                  <p
-                    className="text-sm font-semibold"
-                    data-testid="text-mode-value"
-                  >
-                    {isAdmin ? "Admin (Scorer)" : "Viewer (Read-only)"}
-                  </p>
-                  <p
-                    className="text-xs text-muted-foreground"
-                    data-testid="text-mode-help"
-                  >
-                    {isAdmin
-                      ? "This device can update the score and manage innings."
-                      : "This device can only view the match."}
-                  </p>
-                </div>
-                <span
-                  className={cn(
-                    "rounded-full px-2.5 py-1 text-xs font-semibold",
-                    isAdmin
-                      ? "bg-primary/10 text-primary"
-                      : "bg-secondary text-secondary-foreground",
-                  )}
-                  data-testid="status-mode-chip"
-                >
-                  {isAdmin ? "Admin" : "Viewer"}
-                </span>
-              </div>
-
-              <Separator className="my-4" />
-
-              <div className="grid grid-cols-1 gap-2">
-                <Button
-                  variant="secondary"
-                  className="tap pressable justify-start"
-                  onClick={() => copy(viewerLink, "Viewer link copied")}
-                  data-testid="button-copy-viewer-side"
-                >
-                  <Eye className="h-4 w-4" /> Copy viewer link
-                </Button>
-
-                {isAdmin ? (
-                  <Button
-                    variant="outline"
-                    className="tap pressable justify-start"
-                    onClick={() => copy(adminLink, "Admin link copied")}
-                    data-testid="button-copy-admin-side"
-                  >
-                    <Crown className="h-4 w-4" /> Copy admin link
-                  </Button>
-                ) : null}
-              </div>
-            </Card>
+                  );
+                })}
+              </Card>
+            )}
           </div>
         </div>
         {showResetConfirm ? (
@@ -3778,13 +3863,17 @@ function ScoringApp() {
                 (updatedTeam as any).roster.length
                   ? ((updatedTeam as any).roster as string[])
                   : Object.keys(
-                      (((updatedTeam as any).players ?? {}) as Record<string, any>)
+                      ((updatedTeam as any).players ?? {}) as Record<
+                        string,
+                        any
+                      >,
                     );
 
               // Store *names* in scoring-app teams.players so the dropdowns show names
               // (scoring-app currently treats teams.players as a string[] roster).
               const playersMap =
-                (((updatedTeam as any).players ?? {}) as Record<string, any>) || {};
+                (((updatedTeam as any).players ?? {}) as Record<string, any>) ||
+                {};
               const nextPlayerNames = rosterIds.map(
                 (id) => playersMap?.[id]?.name ?? id,
               );
@@ -3885,6 +3974,8 @@ function BigButton({
   onClick: () => void;
   testId: string;
 }) {
+  const [clicked, setClicked] = React.useState(false);
+
   const toneClasses =
     tone === "primary"
       ? "bg-primary text-primary-foreground border border-primary/30"
@@ -3894,17 +3985,32 @@ function BigButton({
           ? "bg-destructive text-destructive-foreground border border-destructive/30"
           : "bg-secondary text-secondary-foreground border";
 
+  const handleClick = () => {
+    if (disabled) return;
+
+    setClicked(true);
+    onClick();
+
+    setTimeout(() => setClicked(false), 180); // short feedback pulse
+  };
+
   return (
     <Button
       className={cn(
-        "tap pressable h-16 sm:h-20 rounded-2xl text-left justify-between px-4",
+        "relative overflow-hidden tap pressable h-16 sm:h-20 rounded-2xl text-left justify-between px-4 transition-all duration-150 ease-out active:scale-95",
         toneClasses,
+        clicked && "scale-95 brightness-110 ring-2 ring-white/40",
       )}
       disabled={disabled}
-      onClick={onClick}
+      onClick={handleClick}
       data-testid={testId}
     >
-      <div className="flex items-end justify-between w-full">
+      {/* Ripple Pulse */}
+      {clicked && (
+        <span className="absolute inset-0 rounded-2xl bg-white/30 animate-ping pointer-events-none" />
+      )}
+
+      <div className="flex items-end justify-between w-full relative z-10">
         <div className="flex flex-col">
           <span className="text-2xl sm:text-3xl font-display leading-none">
             {label}
@@ -4009,84 +4115,337 @@ function Field({
   );
 }
 
-function ScoreStat({
-  label,
-  value,
-  testId,
+function TraditionalScoreboardCard({
+  state,
+  teamAName,
+  teamBName,
+  inningsA,
+  inningsB,
+  showFullScoreboard,
+  setShowFullScoreboard,
 }: {
-  label: string;
-  value: string;
-  testId: string;
+  state: MatchState;
+  teamAName: string;
+  teamBName: string;
+  inningsA: Innings | null;
+  inningsB: Innings | null;
+  showFullScoreboard: boolean;
+  setShowFullScoreboard: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
-  return (
-    <div className="rounded-2xl border bg-card/60 p-3">
-      <p
-        className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
-        data-testid={`label-${testId}`}
-      >
-        {label}
-      </p>
-      <p className="mt-1 font-display text-2xl" data-testid={`text-${testId}`}>
-        {value}
-      </p>
-    </div>
-  );
-}
+  // Active innings should be driven by match state, not by whether the 2nd innings has "started".
+  // This keeps the 1st innings scorecard always accessible after innings switch.
+  const activeInnings: Innings | null =
+    state.inningsIndex >= 1
+      ? (state.innings?.[state.inningsIndex] ?? inningsB ?? inningsA)
+      : (state.innings?.[0] ?? inningsA ?? inningsB);
 
-function OverLimitControl({
-  value,
-  disabled,
-  onChange,
-}: {
-  value: number;
-  disabled?: boolean;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <Card className="bg-card/60 border p-3">
-      <p
-        className="text-sm font-semibold"
-        data-testid="text-overs-limit-heading"
-      >
-        Overs limit
-      </p>
-      <p
-        className="text-xs text-muted-foreground"
-        data-testid="text-overs-limit-sub"
-      >
-        Typical indoor: 16 overs.
-      </p>
-      <div className="mt-3 flex items-center gap-2">
-        <Button
-          variant="secondary"
-          className="tap pressable h-10 w-12 rounded-xl"
-          disabled={disabled}
-          onClick={() => onChange(Math.max(1, value - 1))}
-          data-testid="button-overs-minus"
-        >
-          −
-        </Button>
-        <div className="flex-1 rounded-xl border bg-card/60 px-3 py-2 text-center">
-          <span
-            className="text-sm font-semibold"
-            data-testid="text-overs-value"
-          >
-            {value}
-          </span>
+  const previousInnings: Innings | null =
+    state.inningsIndex >= 1
+      ? (state.innings?.[state.inningsIndex - 1] ?? inningsA)
+      : null;
+
+  const [showPreviousInnings, setShowPreviousInnings] = useState(false);
+  // add local state to toggle full scoreboard visibility for active innings
+  const teamNameForInnings = (inn: Innings | null) => {
+    if (!inn) return "—";
+    return inn.battingTeamId === "a" ? teamAName : teamBName;
+  };
+
+  const renderInningsScorecard = (inn: Innings | null) => {
+    if (!inn) return null;
+    console.log("DEBUG innings bowler:", inn?.bowler);
+
+    const battingTeamName = teamNameForInnings(inn);
+    const innNet = computeInningsNet(inn);
+
+    const totalOuts = inn.wickets ?? 0;
+    const totalOvers = formatOvers(inn.balls ?? 0, state.oversLimit);
+
+    const extras = inn.extras ?? {
+      wide: 0,
+      noball: 0,
+      bye: 0,
+      legbye: 0,
+    };
+    const extrasTotal =
+      (extras.wide ?? 0) +
+      (extras.noball ?? 0) +
+      (extras.bye ?? 0) +
+      (extras.legbye ?? 0);
+
+    console.log("Innings:", inn);
+
+    const batters = computeBattingCard(inn);
+    console.log("Batting card:", batters);
+
+    const visibleBatters = (batters ?? []).map((b) => ({
+      ...b,
+      runs: Number(b.runs ?? 0) - Number(b.outs ?? 0) * WICKET_PENALTY,
+      skin: inn.batterSkinById?.[b.name],
+    }));
+    const currentSkinNumber = inn.skinIndex + 1;
+
+    type BowlerStat = {
+      name: string;
+      balls: number;
+      runs: number;
+      wickets: number;
+    };
+
+    const computeBowlingCard = (inn2: Innings | null): BowlerStat[] => {
+      if (!inn2) return [];
+
+      const stats = new Map<string, BowlerStat>();
+      const ensure = (name: string) => {
+        const key = String(name || "").trim();
+        if (!key) return null;
+        if (!stats.has(key))
+          stats.set(key, { name: key, balls: 0, runs: 0, wickets: 0 });
+        return stats.get(key)!;
+      };
+
+      for (const ev of (inn2.allBalls ?? []) as BallEvent[]) {
+        const type = String(ev.type);
+        const isExtra =
+          type === "wide" ||
+          type === "noball" ||
+          type === "bye" ||
+          type === "legbye";
+        const isDeliveryLike =
+          Boolean(ev.countsBall) ||
+          type === "wicket" ||
+          type === "run" ||
+          type === "dot" ||
+          isExtra;
+        if (!isDeliveryLike) continue;
+
+        const bowler = String(ev.bowlerAtEvent ?? "").trim();
+        const s = ensure(bowler);
+        if (!s) continue;
+
+        s.runs += Number(ev.runs ?? 0);
+        if (ev.isWicket || type === "wicket") s.wickets += 1;
+        if (ev.countsBall) s.balls += 1;
+      }
+
+      const activeBowler = String(inn2.bowler ?? "").trim();
+      if (activeBowler) {
+        if (!stats.has(activeBowler)) {
+          stats.set(activeBowler, {
+            name: activeBowler,
+            balls: 0,
+            runs: 0,
+            wickets: 0,
+          });
+        }
+      }
+
+      const all = Array.from(stats.values());
+      all.sort((a, b) => {
+        if (b.wickets !== a.wickets) return b.wickets - a.wickets;
+        if (a.runs !== b.runs) return a.runs - b.runs;
+        return a.name.localeCompare(b.name);
+      });
+
+      return all;
+    };
+
+    const bowlers = computeBowlingCard(inn);
+    const filteredBowlers = showFullScoreboard
+      ? bowlers
+      : bowlers.filter((b) => b.name === inn.bowler);
+
+    return (
+      <div className="mb-4">
+        <div className="mb-4">
+          <div className="text-[11px] tracking-widest text-gray-400 font-semibold uppercase">
+            Scorecard
+          </div>
         </div>
-        <Button
-          variant="secondary"
-          className="tap pressable h-10 w-12 rounded-xl"
-          disabled={disabled}
-          onClick={() => onChange(Math.min(50, value + 1))}
-          data-testid="button-overs-plus"
-        >
-          +
-        </Button>
+
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <p className="text-sm font-semibold text-gray-800">
+              {battingTeamName}
+            </p>
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              ({totalOvers} Ov)
+            </p>
+          </div>
+
+          <div className="text-right">
+            <div className="text-3xl font-bold text-gray-900 leading-none tabular-nums">
+              {innNet}/{totalOuts}
+            </div>
+
+            <button
+              onClick={() => setShowFullScoreboard((prev) => !prev)}
+              className="mt-3 inline-flex items-center gap-1 rounded-full border border-gray-300 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 hover:border-gray-400 transition"
+            >
+              {showFullScoreboard ? (
+                <>
+                  Compact View
+                  <span className="text-[10px]">▲</span>
+                </>
+              ) : (
+                <>
+                  Full View
+                  <span className="text-[10px]">▼</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Batters */}
+        <div className="mt-6">
+          <div className="grid grid-cols-[minmax(0,1fr),3rem,3rem,3rem] gap-2 items-center py-3 px-3 rounded-lg bg-muted/40 text-xs font-semibold text-muted-foreground">
+            <div className="uppercase tracking-wide">Batters</div>
+            <div className="text-right uppercase tracking-wide">R</div>
+            <div className="text-right uppercase tracking-wide">B</div>
+            <div className="text-right uppercase tracking-wide">Outs</div>
+          </div>
+        </div>
+
+        {visibleBatters.length ? (
+          <div className="mt-2 px-3">
+            {(showFullScoreboard
+              ? visibleBatters
+              : visibleBatters.filter((b) => b.skin === currentSkinNumber)
+            ).map((b) => {
+              const isActive =
+                b.name === inn.striker || b.name === inn.nonStriker;
+
+              return (
+                <div
+                  key={b.name}
+                  className={`grid grid-cols-[minmax(0,1fr),3rem,3rem,3.5rem] gap-2 items-center py-3 text-sm ${
+                    isActive ? "bg-gray-50 rounded-lg" : ""
+                  }`}
+                >
+                  <div className="flex flex-col">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium truncate" title={b.name}>
+                        {b.name}
+                      </span>
+
+                      {(b.name === inn.striker ||
+                        b.name === inn.nonStriker) && (
+                        <span className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.6)] animate-pulse" />
+                      )}
+                    </div>
+
+                    {b.skin != null && (
+                      <div className="mt-1 inline-block px-2 py-[2px] text-[10px] rounded-full border border-gray-300 text-gray-600 w-fit">
+                        Skin {b.skin}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="text-right tabular-nums">{b.runs}</div>
+                  <div className="text-right tabular-nums">{b.balls}</div>
+                  <div className="text-right tabular-nums">{b.outs}</div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">
+            No batting data yet.
+          </p>
+        )}
+
+        {/* Bottom summary */}
+        <div className="mt-3 border-t pt-3 space-y-2 text-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">Extras</span>
+            <span className="tabular-nums">
+              {extrasTotal}{" "}
+              <span className="text-muted-foreground">
+                (wd {extras.wide ?? 0}, nb {extras.noball ?? 0}, b{" "}
+                {extras.bye ?? 0}, lb {extras.legbye ?? 0})
+              </span>
+            </span>
+          </div>
+          <div className="flex items-center justify-between font-medium">
+            <span>Total</span>
+            <span className="tabular-nums">
+              {innNet}/{totalOuts}{" "}
+              <span className="text-muted-foreground">({totalOvers} Ov)</span>
+            </span>
+          </div>
+        </div>
+
+        {/* Bowlers */}
+
+        <div className="mt-6">
+          <div className="grid grid-cols-[minmax(0,1fr),3rem,3rem,3rem] gap-2 items-center py-3 px-3 rounded-lg bg-muted/40 text-xs font-semibold text-muted-foreground">
+            <div className="uppercase tracking-wide">Bowlers</div>
+            <div className="text-right uppercase tracking-wide">O</div>
+            <div className="text-right uppercase tracking-wide">R</div>
+            <div className="text-right uppercase tracking-wide">W</div>
+          </div>
+        </div>
+
+        {bowlers.length ? (
+          <div className="mt-2 px-3 divide-y">
+            {filteredBowlers.map((b) => (
+              <div
+                key={b.name}
+                className="grid grid-cols-[minmax(0,1fr),3rem,3rem,3rem] gap-2 items-center py-3 text-sm border-b last:border-0"
+              >
+                <div className="truncate font-medium">{b.name}</div>
+
+                <div className="text-right tabular-nums">
+                  {formatOvers(b.balls ?? 0, 999)}
+                </div>
+
+                <div className="text-right tabular-nums">{b.runs}</div>
+
+                <div className="text-right tabular-nums">{b.wickets}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">
+            No bowling data yet.
+          </p>
+        )}
       </div>
+    );
+  };
+
+  return (
+    <Card className="bg-white shadow-md rounded-xl border border-gray-200 p-4 sm:p-5">
+      {/* Current innings always visible */}
+      {renderInningsScorecard(activeInnings)}
+
+      {/* Previous innings collapsible */}
+      {previousInnings ? (
+        <div className="mt-4">
+          <div className="flex justify-end">
+            <Button
+              variant="ghost"
+              className="h-8 px-2 text-xs"
+              onClick={() => setShowPreviousInnings((v) => !v)}
+            >
+              {showPreviousInnings
+                ? "Hide 1st Innings Scorecard ▲"
+                : "View 1st Innings Scorecard ▼"}
+            </Button>
+          </div>
+
+          {showPreviousInnings ? (
+            <div className="mt-2 rounded-xl border bg-card/40 p-3">
+              {renderInningsScorecard(previousInnings)}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </Card>
   );
 }
 
-export default dynamic(() => Promise.resolve(ScoringApp), { ssr: false });
+// ...existing code...
 
+export default dynamic(() => Promise.resolve(ScoringApp), { ssr: false });
