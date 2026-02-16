@@ -96,7 +96,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .status(200)
       .json({ player, meta: { version: API_VERSION, statePersisted: false } });
   } catch (err) {
-    console.error("Update player error:", err);
     return res.status(500).json({ error: "internal" });
   }
 }

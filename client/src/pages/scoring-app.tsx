@@ -285,28 +285,19 @@ function getLocalKey(matchId: string) {
   return `${STORAGE_PREFIX}${matchId}`;
 }
 
+// PRODUCTION NOTE: Local storage is NOT used for match-critical data in production.
+// All data is persisted through Vercel KV via cloudSync APIs.
+// These stubs are kept for compatibility but should not be used for scoring data.
+
 function saveMatch(state: MatchState) {
-  try {
-    localStorage.setItem(getLocalKey(state.matchId), JSON.stringify(state));
-  } catch {
-    // ignore
-  }
+  // Development-only: no-op stub.
+  // Production data persists via saveMatchToCloud() -> API -> KV
 }
 
 function loadMatch(matchId: string): MatchState | null {
-  try {
-    const raw = localStorage.getItem(getLocalKey(matchId));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as MatchState;
-    if (!parsed || parsed.version !== 1) return null;
-
-    // Backward-compatible defaulting.
-    if (!parsed.scoreboardDisplay) parsed.scoreboardDisplay = "skins";
-
-    return parsed;
-  } catch {
-    return null;
-  }
+  // Development-only: no-op stub.
+  // Production data loads via fetchMatchFromCloud() -> API -> KV
+  return null;
 }
 
 function defaultMatch(matchId?: string): MatchState {
@@ -700,7 +691,6 @@ interface ScoringAppProps {
 function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
   const [showFullScoreboard, setShowFullScoreboard] = useState(false);
 
-  console.log("🚀 ScoringApp rendered");
   const { toast } = useToast();
   const [, params] = useRoute<{ matchId: string }>("/match/:matchId");
   const routeMatchId = params ? params.matchId : null;
@@ -995,15 +985,6 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
   // DEBUG (temporary): expose current innings & last events to window for investigation.
   // Paste this immediately after `const currentInnings = state.innings[state.inningsIndex];`
   useEffect(() => {
-    (window as any).__CURRENT_INNINGS__ = currentInnings;
-    (window as any).__ALLBALLS__ = currentInnings.allBalls;
-    console.log(
-      "DEBUG: exposed __CURRENT_INNINGS__ and __ALLBALLS__ (remove after debugging)",
-    );
-  }, [currentInnings.allBalls?.length]);
-  useEffect(() => {
-    console.log("DEBUG allBalls (last 6):", currentInnings.allBalls?.slice(-6));
-    // expose for interactive inspection in DevTools:
     (window as any).__CURRENT_INNINGS__ = currentInnings;
     (window as any).__ALLBALLS__ = currentInnings.allBalls;
   }, [currentInnings.allBalls?.length]);
@@ -4280,7 +4261,6 @@ function TraditionalScoreboardCard({
 
   const renderInningsScorecard = (inn: Innings | null) => {
     if (!inn) return null;
-    console.log("DEBUG innings bowler:", inn?.bowler);
 
     const battingTeamName = teamNameForInnings(inn);
     const innNet = computeInningsNet(inn);
@@ -4300,10 +4280,7 @@ function TraditionalScoreboardCard({
       (extras.bye ?? 0) +
       (extras.legbye ?? 0);
 
-    console.log("Innings:", inn);
-
     const batters = computeBattingCard(inn);
-    console.log("Batting card:", batters);
 
     const visibleBatters = (batters ?? []).map((b) => ({
       ...b,

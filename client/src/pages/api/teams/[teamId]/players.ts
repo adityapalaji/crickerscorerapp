@@ -84,7 +84,6 @@ export default async function handler(
 
     return res.status(201).json({ player, meta: { version: API_VERSION, statePersisted: Boolean(state) } });
   } catch (err) {
-    console.error("Add player error:", err);
     return res.status(500).json({ error: "internal" });
   }
 }

@@ -95,7 +95,6 @@ export default function ManageRoster({
       onChange?.(selectedTeamId, updated);
       setEditingName("");
     } catch (err) {
-      console.error("addPlayer failed", err);
       alert("Add player failed");
     } finally {
       setLoading(false);
@@ -114,7 +113,6 @@ export default function ManageRoster({
       onChange?.(selectedTeamId, updated);
       setEditingId(null);
     } catch (err) {
-      console.error("updatePlayer failed", err);
       alert("Update failed");
     } finally {
       setLoading(false);
@@ -134,7 +132,6 @@ export default function ManageRoster({
       const updated: Team = { ...team!, players: updatedPlayers };
       onChange?.(selectedTeamId, updated);
     } catch (err) {
-      console.error("deactivate failed", err);
       alert("Deactivate failed");
     } finally {
       setLoading(false);
@@ -212,7 +209,6 @@ export default function ManageRoster({
       setSubbingOldId(null);
       setSelectedReplacementId("");
     } catch (err) {
-      console.error("substitute failed", err);
       setSubError("Substitution failed. Please try again.");
     } finally {
       setLoading(false);
@@ -251,7 +247,6 @@ export default function ManageRoster({
       setSubbingOldId(null);
       setNewReplacementName("");
     } catch (err) {
-      console.error("substitute failed", err);
       setSubError("Substitution failed. Please try again.");
     } finally {
       setLoading(false);
