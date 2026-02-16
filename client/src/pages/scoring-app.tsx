@@ -14,6 +14,8 @@ import {
   RotateCcw,
   Share2,
   Undo2,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -145,9 +147,29 @@ type MatchState = {
   // NEW: scoreboard display setting (persisted per match)
   scoreboardDisplay?: ScoreboardDisplayType;
 
+  tableGroups: TableGroup[];
+
   adminKey: string; // used only to gate UI locally + share link
   history: { snapshots: MatchState[] };
 };
+
+interface TableRow {
+  id: string;
+  team: string;
+  played: number;
+  wins: number;
+  losses: number;
+  ties: number;
+  noResult: number;
+  points: number;
+  nrr: number;
+}
+
+interface TableGroup {
+  id: string;
+  name: string;
+  rows: TableRow[];
+}
 
 const STORAGE_PREFIX = "ic_scoring_match_v1:";
 const TOTAL_SKINS = 4;
@@ -346,6 +368,8 @@ function defaultMatch(matchId?: string): MatchState {
 
     // NEW: default scoreboard display (matches current UI)
     scoreboardDisplay: "skins",
+
+    tableGroups: [],
 
     adminKey,
     history: { snapshots: [] },
@@ -1204,6 +1228,10 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
     if (state.setupCompleted) return;
     safeSet(pushHistory({ ...state, scoreboardDisplay: next }));
   }
+
+  const [scoreboardTab, setScoreboardTab] = useState<"scorecard" | "table">(
+    "scorecard",
+  );
 
   function startMatch() {
     safeSet({ ...pushHistory(state), status: "live" });
@@ -3650,154 +3678,191 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                 </div>
               </div>
             </Card>
+            <div className="flex items-center gap-2 mb-4">
+              <button
+                onClick={() => setScoreboardTab("scorecard")}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+                  scoreboardTab === "scorecard"
+                    ? "bg-primary text-white"
+                    : "bg-muted text-muted-foreground"
+                }`}
+              >
+                Scorecard
+              </button>
+
+              <button
+                onClick={() => setScoreboardTab("table")}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+                  scoreboardTab === "table"
+                    ? "bg-primary text-white"
+                    : "bg-muted text-muted-foreground"
+                }`}
+              >
+                Table
+              </button>
+            </div>
 
             {/* Scoreboard display (right column) */}
-            {scoreboardDisplay === "traditional" ? (
-              <TraditionalScoreboardCard
-                state={state}
-                teamAName={state.teams.a.name}
-                teamBName={state.teams.b.name}
-                inningsA={state.innings[0] ?? null}
-                inningsB={state.innings[1] ?? null}
-                showFullScoreboard={showFullScoreboard}
-                setShowFullScoreboard={setShowFullScoreboard}
-              />
-            ) : (
-              <Card className="glass p-4 sm:p-6">
-                <p className="text-sm font-semibold mb-3">
-                  Skin-wise Comparison
-                </p>
+            {scoreboardTab === "scorecard" ? (
+              <>
+                {scoreboardDisplay === "traditional" ? (
+                  <TraditionalScoreboardCard
+                    state={state}
+                    teamAName={state.teams.a.name}
+                    teamBName={state.teams.b.name}
+                    inningsA={state.innings[0] ?? null}
+                    inningsB={state.innings[1] ?? null}
+                    showFullScoreboard={showFullScoreboard}
+                    setShowFullScoreboard={setShowFullScoreboard}
+                  />
+                ) : (
+                  <Card className="glass p-4 sm:p-6">
+                    <p className="text-sm font-semibold mb-3">
+                      Skin-wise Comparison
+                    </p>
 
-                <div className="grid grid-cols-4 text-sm font-semibold border-b pb-2">
-                  <div>Skin</div>
-                  <div className="text-center">{state.teams.a.name}</div>
-                  <div className="text-center">{state.teams.b.name}</div>
-                  <div className="text-center">Winner</div>
-                </div>
-
-                {[0, 1, 2, 3].map((skin) => {
-                  function getSkinNet(
-                    inn: Innings | undefined,
-                    skinIndex: number,
-                  ): number | null {
-                    if (!inn) return null;
-
-                    // If there are no events at all in this innings and no completed skins,
-                    // treat the skin as not-yet-started → return null (so UI shows —)
-                    if (
-                      (inn.deliveries ?? 0) === 0 &&
-                      (inn.completedSkins?.length ?? 0) === 0
-                    ) {
-                      return null;
-                    }
-
-                    // Completed skin
-                    if (inn.completedSkins?.[skinIndex]) {
-                      return inn.completedSkins[skinIndex].netRuns;
-                    }
-
-                    // Live skin: only show live net if this is the active skin and there have been deliveries
-                    if (inn.skinIndex === skinIndex) {
-                      return computeLiveSkinNet(inn);
-                    }
-
-                    return null;
-                  }
-
-                  const aNet = getSkinNet(state.innings[0], skin);
-                  const bNet = getSkinNet(state.innings[1], skin);
-
-                  // Only declare a winner after BOTH teams have completed this skin.
-                  const aCompleted = !!state.innings[0]?.completedSkins?.[skin];
-                  const bCompleted = !!state.innings[1]?.completedSkins?.[skin];
-
-                  let winner = "—";
-
-                  if (
-                    aNet !== null &&
-                    bNet !== null &&
-                    aCompleted &&
-                    bCompleted
-                  ) {
-                    if (aNet > bNet) {
-                      winner = state.teams.a.name;
-                    } else if (bNet > aNet) {
-                      winner = state.teams.b.name;
-                    } else {
-                      winner = "Tie";
-                    }
-                  }
-
-                  // helper to read finishing pair (if any) for an innings' completed skin
-                  const finishingPairFor = (innIdx: 0 | 1) => {
-                    const innings = state.innings[innIdx];
-                    const entry = innings?.completedSkins?.[skin];
-                    return entry?.batters && entry.batters.length
-                      ? entry.batters
-                      : null;
-                  };
-
-                  const aPair = finishingPairFor(0);
-                  const bPair = finishingPairFor(1);
-
-                  return (
-                    <div
-                      key={skin}
-                      className="grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 py-2 border-b"
-                    >
-                      <div>Skin {skin + 1}</div>
-
-                      {/* Team A: net + finishing pair (if completed) */}
-                      <div className="text-center">
-                        {aNet ?? "—"}
-                        {aCompleted && aPair ? (
-                          <div
-                            className="text-xs text-muted-foreground mt-1"
-                            title={aPair.join(", ")}
-                          >
-                            <span
-                              style={{
-                                whiteSpace: "nowrap",
-                                display: "inline-block",
-                                maxWidth: "160px",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                              }}
-                            >
-                              {aPair.join(" · ")}
-                            </span>
-                          </div>
-                        ) : null}
-                      </div>
-
-                      {/* Team B: net + finishing pair (if completed) */}
-                      <div className="text-center">
-                        {bNet ?? "—"}
-                        {bCompleted && bPair ? (
-                          <div
-                            className="text-xs text-muted-foreground mt-1"
-                            title={bPair.join(", ")}
-                          >
-                            <span
-                              style={{
-                                whiteSpace: "nowrap",
-                                display: "inline-block",
-                                maxWidth: "160px",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                              }}
-                            >
-                              {bPair.join(" · ")}
-                            </span>
-                          </div>
-                        ) : null}
-                      </div>
-
-                      <div className="text-center">{winner}</div>
+                    <div className="grid grid-cols-4 text-sm font-semibold border-b pb-2">
+                      <div>Skin</div>
+                      <div className="text-center">{state.teams.a.name}</div>
+                      <div className="text-center">{state.teams.b.name}</div>
+                      <div className="text-center">Winner</div>
                     </div>
-                  );
-                })}
-              </Card>
+
+                    {[0, 1, 2, 3].map((skin) => {
+                      function getSkinNet(
+                        inn: Innings | undefined,
+                        skinIndex: number,
+                      ): number | null {
+                        if (!inn) return null;
+
+                        // If there are no events at all in this innings and no completed skins,
+                        // treat the skin as not-yet-started → return null (so UI shows —)
+                        if (
+                          (inn.deliveries ?? 0) === 0 &&
+                          (inn.completedSkins?.length ?? 0) === 0
+                        ) {
+                          return null;
+                        }
+
+                        // Completed skin
+                        if (inn.completedSkins?.[skinIndex]) {
+                          return inn.completedSkins[skinIndex].netRuns;
+                        }
+
+                        // Live skin: only show live net if this is the active skin and there have been deliveries
+                        if (inn.skinIndex === skinIndex) {
+                          return computeLiveSkinNet(inn);
+                        }
+
+                        return null;
+                      }
+
+                      const aNet = getSkinNet(state.innings[0], skin);
+                      const bNet = getSkinNet(state.innings[1], skin);
+
+                      // Only declare a winner after BOTH teams have completed this skin.
+                      const aCompleted =
+                        !!state.innings[0]?.completedSkins?.[skin];
+                      const bCompleted =
+                        !!state.innings[1]?.completedSkins?.[skin];
+
+                      let winner = "—";
+
+                      if (
+                        aNet !== null &&
+                        bNet !== null &&
+                        aCompleted &&
+                        bCompleted
+                      ) {
+                        if (aNet > bNet) {
+                          winner = state.teams.a.name;
+                        } else if (bNet > aNet) {
+                          winner = state.teams.b.name;
+                        } else {
+                          winner = "Tie";
+                        }
+                      }
+
+                      // helper to read finishing pair (if any) for an innings' completed skin
+                      const finishingPairFor = (innIdx: 0 | 1) => {
+                        const innings = state.innings[innIdx];
+                        const entry = innings?.completedSkins?.[skin];
+                        return entry?.batters && entry.batters.length
+                          ? entry.batters
+                          : null;
+                      };
+
+                      const aPair = finishingPairFor(0);
+                      const bPair = finishingPairFor(1);
+
+                      return (
+                        <div
+                          key={skin}
+                          className="grid grid-cols-[1fr,3rem,3rem,3.5rem] gap-2 py-2 border-b"
+                        >
+                          <div>Skin {skin + 1}</div>
+
+                          {/* Team A: net + finishing pair (if completed) */}
+                          <div className="text-center">
+                            {aNet ?? "—"}
+                            {aCompleted && aPair ? (
+                              <div
+                                className="text-xs text-muted-foreground mt-1"
+                                title={aPair.join(", ")}
+                              >
+                                <span
+                                  style={{
+                                    whiteSpace: "nowrap",
+                                    display: "inline-block",
+                                    maxWidth: "160px",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                  }}
+                                >
+                                  {aPair.join(" · ")}
+                                </span>
+                              </div>
+                            ) : null}
+                          </div>
+
+                          {/* Team B: net + finishing pair (if completed) */}
+                          <div className="text-center">
+                            {bNet ?? "—"}
+                            {bCompleted && bPair ? (
+                              <div
+                                className="text-xs text-muted-foreground mt-1"
+                                title={bPair.join(", ")}
+                              >
+                                <span
+                                  style={{
+                                    whiteSpace: "nowrap",
+                                    display: "inline-block",
+                                    maxWidth: "160px",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                  }}
+                                >
+                                  {bPair.join(" · ")}
+                                </span>
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className="text-center">{winner}</div>
+                        </div>
+                      );
+                    })}
+                  </Card>
+                )}
+              </>
+            ) : (
+              <PointsTable
+                groups={state.tableGroups}
+                isAdmin={isAdmin}
+                onUpdate={(groups) => {
+                  safeSet({ ...state, tableGroups: groups });
+                }}
+              />
             )}
           </div>
         </div>
@@ -4299,7 +4364,7 @@ function TraditionalScoreboardCard({
 
         {/* Batters */}
         <div className="mt-6">
-          <div className="grid grid-cols-[minmax(0,1fr),3rem,3rem,3rem] gap-2 items-center py-3 px-3 rounded-lg bg-muted/40 text-xs font-semibold text-muted-foreground">
+          <div className="grid grid-cols-[minmax(0,1fr),3rem,3rem,3.5rem] gap-2 items-center py-3 px-3 rounded-lg bg-muted/40 text-xs font-semibold text-muted-foreground">
             <div className="uppercase tracking-wide">Batters</div>
             <div className="text-right uppercase tracking-wide">R</div>
             <div className="text-right uppercase tracking-wide">B</div>
@@ -4311,7 +4376,32 @@ function TraditionalScoreboardCard({
           <div className="mt-2 px-3">
             {(showFullScoreboard
               ? visibleBatters
-              : visibleBatters.filter((b) => b.skin === currentSkinNumber)
+              : (() => {
+                  // In compact view, show:
+                  // 1. Active batters (striker/non-striker) always
+                  // 2. Other batters from current skin
+                  // 3. If no batters in current skin yet, show previous skin batters
+                  
+                  const activeBatters = visibleBatters.filter((b) => 
+                    b.name === inn.striker || b.name === inn.nonStriker
+                  );
+                  
+                  const currentSkinBatters = visibleBatters.filter((b) => 
+                    b.skin === currentSkinNumber &&
+                    b.name !== inn.striker &&
+                    b.name !== inn.nonStriker
+                  );
+                  
+                  // Combine active + current skin batters
+                  let displayBatters = [...activeBatters, ...currentSkinBatters];
+                  
+                  // If no one in current skin (skin just completed), show previous skin
+                  if (displayBatters.length === 0 && currentSkinNumber > 1) {
+                    displayBatters = visibleBatters.filter((b) => b.skin === currentSkinNumber - 1);
+                  }
+                  
+                  return displayBatters;
+                })()
             ).map((b) => {
               const isActive =
                 b.name === inn.striker || b.name === inn.nonStriker;
@@ -4443,6 +4533,309 @@ function TraditionalScoreboardCard({
         </div>
       ) : null}
     </Card>
+  );
+}
+
+function PointsTable({
+  groups,
+  isAdmin,
+  onUpdate,
+}: {
+  groups: TableGroup[];
+  isAdmin: boolean;
+  onUpdate: (groups: TableGroup[]) => void;
+}) {
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+
+  const updateGroupName = (groupId: string, name: string) => {
+    onUpdate(
+      (groups || []).map((g) =>
+        g.id === groupId ? { ...g, name } : g
+      )
+    );
+  };
+
+  const deleteGroup = (groupId: string) => {
+    onUpdate((groups || []).filter((g) => g.id !== groupId));
+  };
+
+  const addTeam = (groupId: string) => {
+    onUpdate(
+      (groups || []).map((g) =>
+        g.id === groupId
+          ? {
+              ...g,
+              rows: [
+                ...g.rows,
+                {
+                  id: crypto.randomUUID(),
+                  team: "New Team",
+                  played: 0,
+                  wins: 0,
+                  losses: 0,
+                  ties: 0,
+                  noResult: 0,
+                  points: 0,
+                  nrr: 0,
+                },
+              ],
+            }
+          : g
+      )
+    );
+  };
+
+  const deleteTeam = (groupId: string, rowId: string) => {
+    onUpdate(
+      (groups || []).map((g) =>
+        g.id === groupId
+          ? {
+              ...g,
+              rows: g.rows.filter((r) => r.id !== rowId),
+            }
+          : g
+      )
+    );
+  };
+
+  const updateRow = (
+    groupId: string,
+    rowId: string,
+    field: keyof TableRow,
+    value: string
+  ) => {
+    onUpdate(
+      (groups || []).map((g) =>
+        g.id === groupId
+          ? {
+              ...g,
+              rows: g.rows.map((r) =>
+                r.id === rowId
+                  ? {
+                      ...r,
+                      [field]:
+                        field === "team"
+                          ? value
+                          : field === "nrr"
+                          ? value // Keep as string for editing, will display correctly
+                          : Number(value),
+                    }
+                  : r
+              ),
+            }
+          : g
+      )
+    );
+  };;
+
+  return (
+    <div className="space-y-8">
+      {(groups || []).length === 0 && isAdmin && (
+        <div className="text-sm text-muted-foreground">
+          No groups yet. Click "Add Group".
+        </div>
+      )}
+
+      {(groups || []).map((group) => (
+        <div key={group.id} className="rounded-xl border-2 border-teal-200 bg-gradient-to-br from-white to-teal-50/30 p-4 shadow-lg hover:shadow-xl transition-shadow duration-300">
+          <div className="space-y-4">
+
+          {/* Group Header */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {editingGroupId === group.id ? (
+                <input
+                  className="text-sm font-semibold border-2 border-teal-400 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-teal-300"
+                  value={group.name}
+                  onChange={(e) =>
+                    updateGroupName(group.id, e.target.value)
+                  }
+                  autoFocus
+                />
+              ) : (
+                <h3 className="text-lg font-black tracking-wide text-foreground bg-gradient-to-r from-teal-600 to-cyan-500 bg-clip-text text-transparent">
+                  {group.name}
+                </h3>
+              )}
+
+              {isAdmin && (
+                <button
+                  onClick={() =>
+                    setEditingGroupId(
+                      editingGroupId === group.id ? null : group.id
+                    )
+                  }
+                  className="text-muted-foreground hover:text-foreground transition"
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+
+            {isAdmin && (
+              <button
+                onClick={() => deleteGroup(group.id)}
+                className="text-muted-foreground hover:text-destructive transition"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Column Headers */}
+          <div className="grid grid-cols-[2.2fr,0.8fr,0.8fr,0.8fr,0.8fr,0.8fr,0.9fr,1.8fr,0.6fr] items-center px-3 py-3 rounded-t-lg bg-gradient-to-r from-teal-600 via-teal-500 to-cyan-500 text-xs font-bold tracking-widest text-white uppercase shadow-lg">
+            <div className="font-black">Team</div>
+            <div className="text-right">M</div>
+            <div className="text-right">W</div>
+            <div className="text-right">L</div>
+            <div className="text-right">T</div>
+            <div className="text-right">N/R</div>
+            <div className="text-right">PT</div>
+            <div className="text-right">NRR</div>
+            <div></div>
+          </div>
+
+          {/* Teams */}
+          <div className="divide-y rounded-b-lg overflow-hidden border border-t-0 border-teal-200 shadow-md">
+            {group.rows.map((row, index) => (
+              <div
+                key={row.id}
+                className={`grid grid-cols-[2.2fr,0.8fr,0.8fr,0.8fr,0.8fr,0.8fr,0.9fr,1.8fr,0.6fr] items-center px-3 py-3 text-base sm:text-lg tabular-nums transition-all duration-200 hover:shadow-lg ${
+                  index % 2 === 0
+                    ? "bg-white/70 hover:bg-teal-50"
+                    : "bg-teal-50/40 hover:bg-teal-100/40"
+                } ${
+                  editingGroupId === group.id ? "bg-teal-100/30" : ""
+                }`}
+              >
+                <div className="font-semibold text-foreground/90">
+                  {isAdmin && editingGroupId === group.id ? (
+                    <input
+                      type="text"
+                      className="w-full rounded-md border bg-background px-2 py-1 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400 focus:bg-teal-50/5 selection:bg-teal-400 selection:text-white"
+                      value={row.team}
+                      onChange={(e) =>
+                        updateRow(
+                          group.id,
+                          row.id,
+                          "team",
+                          e.target.value
+                        )
+                      }
+                    />
+                  ) : (
+                    row.team
+                  )}
+                </div>
+
+                {(["played", "wins", "losses", "ties", "noResult", "points"] as const).map(
+                  (field) => (
+                    <div key={field} className="text-right">
+                      {isAdmin && editingGroupId === group.id ? (
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          className="w-full rounded-md border bg-background px-2 py-1 text-right text-sm text-foreground tabular-nums focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400 focus:bg-teal-50/5 selection:bg-teal-400 selection:text-white"
+                          value={row[field]}
+                          onChange={(e) =>
+                            updateRow(
+                              group.id,
+                              row.id,
+                              field,
+                              e.target.value
+                            )
+                          }
+                        />
+                      ) : (
+                        <span className="font-semibold text-foreground/80">{row[field]}</span>
+                      )}
+                    </div>
+                  )
+                )}
+
+                {/* NRR Field - Special handling for decimals and negative values */}
+                <div className="text-right">
+                  {isAdmin && editingGroupId === group.id ? (
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      className="w-full rounded-md border bg-background px-2 py-1 text-right text-sm text-foreground tabular-nums focus:outline-none focus:ring-2 focus:ring-teal-400/40 focus:border-teal-400 focus:bg-teal-50/5 selection:bg-teal-400 selection:text-white"
+                      value={row.nrr}
+                      onChange={(e) => {
+                        const val = e.target.value;
+
+                        // Allow:
+                        // - empty string
+                        // - digits
+                        // - optional leading minus
+                        // - single decimal point
+                        // Match: empty, "-", ".", "-.", "1", "-1", "1.5", "-1.5", etc
+                        if (val === "" || /^-?\d*\.?\d*$/.test(val)) {
+                          updateRow(
+                            group.id,
+                            row.id,
+                            "nrr",
+                            val
+                          )
+                        }
+                      }}
+                    />
+                  ) : (
+                    (() => {
+                      const numValue = typeof row.nrr === 'string' ? parseFloat(row.nrr) : row.nrr;
+                      const displayValue = isNaN(numValue) ? "0.000" : numValue.toFixed(3);
+                      return (
+                        <span className={`font-bold tabular-nums ${ numValue > 0 ? 'text-green-600' : numValue < 0 ? 'text-red-600' : 'text-foreground' }`}>
+                          {displayValue}
+                        </span>
+                      );
+                    })()
+                  )}
+                </div>
+
+                {isAdmin && editingGroupId === group.id && (
+                  <button
+                    onClick={() => deleteTeam(group.id, row.id)}
+                    className="text-muted-foreground hover:text-destructive transition"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {isAdmin && editingGroupId === group.id && (
+            <button
+              onClick={() => addTeam(group.id)}
+              className="text-xs font-semibold text-teal-600 hover:text-teal-700 hover:bg-teal-100 px-3 py-1.5 rounded-md transition-all duration-200"
+            >
+              + Add Team
+            </button>
+          )}
+          </div>
+        </div>
+      ))}
+
+      {isAdmin && (
+        <button
+          onClick={() =>
+            onUpdate([
+              ...(groups || []),
+              {
+                id: crypto.randomUUID(),
+                name: `Group ${(groups || []).length + 1}`,
+                rows: [],
+              },
+            ])
+          }
+          className="px-4 py-2 bg-gradient-to-r from-teal-600 to-cyan-500 text-white rounded-lg text-sm font-semibold shadow-md hover:shadow-lg hover:from-teal-500 hover:to-cyan-400 transition-all duration-200 transform hover:scale-105"
+        >
+          + Add Group
+        </button>
+      )}
+    </div>
   );
 }
 
