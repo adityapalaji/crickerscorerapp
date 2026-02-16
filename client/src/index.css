@@ -201,7 +201,8 @@
   }
 
   .tap {
-    touch-action: manipulation;
+    /* Removed touch-action: manipulation to fix double-click issues */
+    -webkit-tap-highlight-color: transparent;
   }
 
   .pressable {

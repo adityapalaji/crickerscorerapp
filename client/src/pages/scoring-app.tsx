@@ -18,6 +18,12 @@ import {
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -713,6 +719,8 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
   }, [location]);
 
   const [isRosterOpen, setRosterOpen] = useState(false);
+  const [coinFlipResult, setCoinFlipResult] = useState<"HEADS" | "TAILS" | null>(null);
+  const [showCoinFlip, setShowCoinFlip] = useState(false);
 
   const roleFromUrl =
     (getQueryParam(url.search, "mode") as Role | null) ?? "admin";
@@ -1113,9 +1121,9 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
   // batter roles mid-skin, so keep this unlocked.
   const isBatterSelectionLocked = false;
 
-  // 🔒 Bowler selection locked during middle of over
-  const isBowlerSelectionLocked =
-    currentInnings.balls > 0 && currentInnings.balls % 6 !== 0;
+  // � Bowler selection now UNLOCKED to allow mid-over substitutions (e.g., injuries)
+  // Admins can now change bowler at any time during an over
+  const isBowlerSelectionLocked = false;
 
   const matchCompleted =
     state.status === "completed" ||
@@ -2585,7 +2593,7 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                   </div>
                 </div>
 
-                <TabsContent value="controls" className="mt-4">
+                <TabsContent value="controls" className="mt-4" forceMount hidden={activeTab !== "controls"}>
                   {!matchEnded && isOverBreak && (
                     <div className="mb-3 rounded-xl border bg-yellow-50 p-3 text-sm text-yellow-900">
                       Over completed. Please select the next bowler to continue.
@@ -3043,7 +3051,7 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                   ) : null}
                 </TabsContent>
 
-                <TabsContent value="players" className="mt-4">
+                <TabsContent value="players" className="mt-4" forceMount hidden={activeTab !== "players"}>
                   {/* Manage roster button (visible to admins). Inserted above the player selects */}
                   <div className="flex items-center justify-end mb-3">
                     {isAdmin && teamObj ? (
@@ -3104,7 +3112,10 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                             <option
                               key={playerKey}
                               value={playerKey}
-                              disabled={playerKey === currentInnings.nonStriker}
+                              disabled={
+                                playerKey === currentInnings.nonStriker ||
+                                usedBatters.has(playerKey)
+                              }
                             >
                               {label}{" "}
                               {usedBatters.has(playerKey) ? "(used)" : ""}
@@ -3157,7 +3168,10 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                             <option
                               key={playerKey}
                               value={playerKey}
-                              disabled={playerKey === currentInnings.striker}
+                              disabled={
+                                playerKey === currentInnings.striker ||
+                                usedBatters.has(playerKey)
+                              }
                             >
                               {label}{" "}
                               {usedBatters.has(playerKey) ? "(used)" : ""}
@@ -3320,7 +3334,7 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                   </div>
                 </TabsContent>
 
-                <TabsContent value="match" className="mt-4">
+                <TabsContent value="match" className="mt-4" forceMount hidden={activeTab !== "match"}>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <Field
                       label="Match title"
@@ -3448,7 +3462,21 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
 
                     {/* Toss */}
                     <Card className="bg-card/60 border p-3">
-                      <p className="text-sm font-semibold">Toss</p>
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-semibold">Toss</p>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const result = Math.random() < 0.5 ? "HEADS" : "TAILS";
+                            setCoinFlipResult(result);
+                            setShowCoinFlip(true);
+                          }}
+                        >
+                          🪙 Flip Coin
+                        </Button>
+                      </div>
                       <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
                         <div className="space-y-1">
                           <Label className="text-xs text-muted-foreground">
@@ -4019,6 +4047,40 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
             }}
           />
         ) : null}
+
+        {/* Coin Flip Result Dialog */}
+        <AlertDialog open={showCoinFlip} onOpenChange={setShowCoinFlip}>
+          <AlertDialogContent className="max-w-sm">
+            <div className="text-center py-8">
+              <AlertDialogTitle className="sr-only">Coin Toss Result</AlertDialogTitle>
+              <AlertDialogDescription className="sr-only">
+                The coin toss result
+              </AlertDialogDescription>
+              <motion.div
+                initial={{ scale: 0.5, opacity: 0, rotateY: 0 }}
+                animate={{ scale: 1, opacity: 1, rotateY: 360 }}
+                transition={{ duration: 0.6, ease: "easeOut" }}
+                className="mb-6"
+              >
+                <div className="text-8xl mb-4">🪙</div>
+              </motion.div>
+              <motion.div
+                initial={{ y: 20, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                transition={{ delay: 0.3, duration: 0.4 }}
+              >
+                <p className="text-5xl font-bold mb-2">{coinFlipResult}</p>
+                <p className="text-muted-foreground">Coin Toss Result</p>
+              </motion.div>
+              <Button
+                className="mt-6"
+                onClick={() => setShowCoinFlip(false)}
+              >
+                Close
+              </Button>
+            </div>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );
