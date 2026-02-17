@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from "react";
+import { useRouter } from "next/router";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,6 +15,7 @@ function getQueryMode(): "admin" | "viewer" {
 }
 
 export default function HomeLanding() {
+  const router = useRouter();
   const [isCreating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scoreboardDisplay, setScoreboardDisplay] = useState<
@@ -78,7 +80,7 @@ export default function HomeLanding() {
               <Button
                 className="w-full"
                 onClick={async () => {
-                  if (typeof window === "undefined") return;
+                  if (!router.isReady) return;
                   if (isCreating) return;
 
                   setError(null);
@@ -93,9 +95,13 @@ export default function HomeLanding() {
                       const body = await res.json().catch(() => ({}));
                       throw new Error(body?.error || `HTTP ${res.status}`);
                     }
-                    const data = (await res.json()) as { adminUrl?: string };
-                    if (!data?.adminUrl) throw new Error("Missing adminUrl");
-                    window.location.assign(data.adminUrl);
+                    const data = (await res.json()) as { matchId?: string; adminKey?: string };
+                    if (!data?.matchId || !data?.adminKey) {
+                      throw new Error("Missing match ID or admin key");
+                    }
+                    // Navigate to the match scoring page
+                    const nextPath = `/match/${encodeURIComponent(data.matchId)}?mode=admin&key=${encodeURIComponent(data.adminKey)}`;
+                    router.push(nextPath);
                   } catch (e: any) {
                     setError(e?.message || "Failed to create match");
                     setCreating(false);
