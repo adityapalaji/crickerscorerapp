@@ -2,16 +2,5 @@
   "framework": "nextjs",
   "rewrites": [
     { "source": "/((?!api/|_next/|favicon\\.png|opengraph\\.jpg).*)", "destination": "/" }
-  ],
-  "headers": [
-    {
-      "source": "/match/:matchId",
-      "headers": [
-        {
-          "key": "x-vercel-protection-bypass",
-          "value": "rba_public"
-        }
-      ]
-    }
   ]
 }
