@@ -3054,13 +3054,14 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                           !state.setupCompleted ||
                           isBatterSelectionLocked
                         }
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const inn = state.innings[state.inningsIndex];
                           setPlayers(
                             e.target.value,
-                            currentInnings.nonStriker,
-                            currentInnings.bowler,
-                          )
-                        }
+                            inn.nonStriker,
+                            inn.bowler,
+                          );
+                        }}
                       >
                         {/* Striker */}
                         {/* Striker */}
@@ -3112,13 +3113,14 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                           !state.setupCompleted ||
                           isBatterSelectionLocked
                         }
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const inn = state.innings[state.inningsIndex];
                           setPlayers(
-                            currentInnings.striker,
+                            inn.striker,
                             e.target.value,
-                            currentInnings.bowler,
-                          )
-                        }
+                            inn.bowler,
+                          );
+                        }}
                       >
                         {/* Non-Striker */}
                         {/* Non-Striker */}
@@ -3261,9 +3263,10 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
 
                           const balls = bowlerBalls[playerKey] ?? 0;
                           const overs = Math.floor(balls / 6);
+                          const inn = state.innings[state.inningsIndex];
                           const isConsecutive =
                             isAtOverBreak &&
-                            currentInnings.lastOverBowler === playerKey;
+                            inn.lastOverBowler === playerKey;
                           const isMaxed = overs >= 2;
 
                           const oversLimitVal = clamp(
@@ -3272,7 +3275,7 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                             50,
                           );
                           const infeasible = !canCompleteRemainingOvers(
-                            currentInnings,
+                            inn,
                             bowlingPlayers,
                             playerKey,
                             oversLimitVal,
@@ -3552,19 +3555,35 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                   <div className="text-sm">
                     <div className="text-xs text-muted-foreground">Score</div>
 
-                    <div className="font-medium">
-                      {`${state.teams.a.name}: Net ${computeInningsNet(state.innings[0])} (Gross ${state.innings[0]?.runs ?? 0}, Outs ${state.innings[0]?.wickets ?? 0}) • Overs ${formatOvers(state.innings[0]?.balls ?? 0, state.oversLimit)}`}
-                    </div>
+                    {(() => {
+                      // Find innings by batting team ID to ensure correct scores
+                      const teamAInnings = state.innings.find((inn) => inn.battingTeamId === "a");
+                      const teamBInnings = state.innings.find((inn) => inn.battingTeamId === "b");
 
-                    <div className="font-medium mt-1">
-                      {`${state.teams.b.name}: Net ${computeInningsNet(state.innings[1])} (Gross ${state.innings[1]?.runs ?? 0}, Outs ${state.innings[1]?.wickets ?? 0}) • Overs ${formatOvers(state.innings[1]?.balls ?? 0, state.oversLimit)}`}
-                    </div>
+                      return (
+                        <>
+                          <div className="font-medium">
+                            {teamAInnings
+                              ? `${state.teams.a.name}: Net ${computeInningsNet(teamAInnings)} (Gross ${teamAInnings.runs ?? 0}, Outs ${teamAInnings.wickets ?? 0}) • Overs ${formatOvers(teamAInnings.balls ?? 0, state.oversLimit)}`
+                              : `${state.teams.a.name}: —`}
+                          </div>
+
+                          <div className="font-medium mt-1">
+                            {teamBInnings
+                              ? `${state.teams.b.name}: Net ${computeInningsNet(teamBInnings)} (Gross ${teamBInnings.runs ?? 0}, Outs ${teamBInnings.wickets ?? 0}) • Overs ${formatOvers(teamBInnings.balls ?? 0, state.oversLimit)}`
+                              : `${state.teams.b.name}: —`}
+                          </div>
+                        </>
+                      );
+                    })()}
 
                     {/* Result / winner line (ONLY shown when match is completed) */}
                     <div className="mt-3">
                       {(() => {
-                        const aTotal = computeInningsNet(state.innings[0]);
-                        const bTotal = computeInningsNet(state.innings[1]);
+                        const teamAInnings = state.innings.find((inn) => inn.battingTeamId === "a");
+                        const teamBInnings = state.innings.find((inn) => inn.battingTeamId === "b");
+                        const aTotal = teamAInnings ? computeInningsNet(teamAInnings) : 0;
+                        const bTotal = teamBInnings ? computeInningsNet(teamBInnings) : 0;
 
                         if (state.status === "completed") {
                           if (aTotal > bTotal) {
@@ -3603,8 +3622,11 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                     aria-label="Share match summary on WhatsApp"
                     onClick={() => {
                       try {
-                        const aTotal = computeInningsNet(state.innings[0]);
-                        const bTotal = computeInningsNet(state.innings[1]);
+                        // Find innings by batting team ID
+                        const teamAInnings = state.innings.find((inn) => inn.battingTeamId === "a");
+                        const teamBInnings = state.innings.find((inn) => inn.battingTeamId === "b");
+                        const aTotal = teamAInnings ? computeInningsNet(teamAInnings) : 0;
+                        const bTotal = teamBInnings ? computeInningsNet(teamBInnings) : 0;
 
                         const lines: string[] = [];
                         lines.push(
@@ -3627,10 +3649,10 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
 
                         // Score lines
                         lines.push(
-                          `${state.teams.a.name}: Net ${aTotal} (Gross ${state.innings[0]?.runs ?? 0}, Outs ${state.innings[0]?.wickets ?? 0}) • Overs ${formatOvers(state.innings[0]?.balls ?? 0, state.oversLimit)}`,
+                          `${state.teams.a.name}: Net ${aTotal} (Gross ${teamAInnings?.runs ?? 0}, Outs ${teamAInnings?.wickets ?? 0}) • Overs ${formatOvers(teamAInnings?.balls ?? 0, state.oversLimit)}`,
                         );
                         lines.push(
-                          `${state.teams.b.name}: Net ${bTotal} (Gross ${state.innings[1]?.runs ?? 0}, Outs ${state.innings[1]?.wickets ?? 0}) • Overs ${formatOvers(state.innings[1]?.balls ?? 0, state.oversLimit)}`,
+                          `${state.teams.b.name}: Net ${bTotal} (Gross ${teamBInnings?.runs ?? 0}, Outs ${teamBInnings?.wickets ?? 0}) • Overs ${formatOvers(teamBInnings?.balls ?? 0, state.oversLimit)}`,
                         );
 
                         // Result / winner text (only include explicit Result when match is completed)
