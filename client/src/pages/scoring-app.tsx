@@ -290,13 +290,50 @@ function getLocalKey(matchId: string) {
 // These stubs are kept for compatibility but should not be used for scoring data.
 
 function saveMatch(state: MatchState) {
-  // Development-only: no-op stub.
-  // Production data persists via saveMatchToCloud() -> API -> KV
+  if (typeof window === "undefined") return;
+
+  try {
+    const payload = JSON.stringify(state);
+    localStorage.setItem(getLocalKey(state.matchId), payload);
+    localStorage.setItem(`${STORAGE_PREFIX}last_match_id`, state.matchId);
+  } catch {
+    // best-effort local persistence
+  }
 }
 
 function loadMatch(matchId: string): MatchState | null {
-  // Development-only: no-op stub.
-  // Production data loads via fetchMatchFromCloud() -> API -> KV
+  if (typeof window === "undefined") return null;
+
+  const readAndParse = (key: string): MatchState | null => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as MatchState;
+      if (!parsed || typeof parsed !== "object") return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
+
+  // Primary key: explicit match id from route/state
+  const direct = readAndParse(getLocalKey(matchId));
+  if (direct) {
+    if (!direct.matchId) direct.matchId = matchId;
+    return direct;
+  }
+
+  // Fallback: reopen last locally edited match when IDs drift in local sessions
+  try {
+    const lastMatchId = localStorage.getItem(`${STORAGE_PREFIX}last_match_id`);
+    if (lastMatchId) {
+      const fallback = readAndParse(getLocalKey(lastMatchId));
+      if (fallback) return fallback;
+    }
+  } catch {
+    // best-effort local load
+  }
+
   return null;
 }
 
@@ -602,9 +639,16 @@ function setQueryParam(search: string, key: string, value: string | null) {
 }
 
 function getOrigin() {
-  return typeof window === "undefined"
-    ? "http://localhost"
-    : window.location.origin;
+  const configured =
+    process.env.NEXT_PUBLIC_SHARE_ORIGIN?.trim() ||
+    process.env.NEXT_PUBLIC_APP_ORIGIN?.trim() ||
+    "";
+
+  if (configured) {
+    return configured.replace(/\/$/, "");
+  }
+
+  return typeof window === "undefined" ? "http://localhost" : window.location.origin;
 }
 
 function buildViewerLink(matchId: string) {
@@ -614,6 +658,19 @@ function buildViewerLink(matchId: string) {
 
 function buildAdminLink(matchId: string, adminKey: string) {
   return `${getOrigin()}/match/${encodeURIComponent(matchId)}?mode=admin&key=${encodeURIComponent(adminKey)}`;
+}
+
+function isLocalHostUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "::1"
+    );
+  } catch {
+    return false;
+  }
 }
 
 // Helper: returns true if, after assigning `candidateBowlerId` to the current upcoming over,
@@ -740,6 +797,11 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
   const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
   const lastCloudSavedAtRef = useRef<number>(0);
   const cloudSaveTimerRef = useRef<any>(null);
+  const latestLocalUpdatedAtRef = useRef<number>(state.updatedAt ?? 0);
+
+  useEffect(() => {
+    latestLocalUpdatedAtRef.current = state.updatedAt ?? 0;
+  }, [state.updatedAt]);
 
   // Load from cloud once when opening a match link (device handoff)
   useEffect(() => {
@@ -798,18 +860,34 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
     }
 
     cloudSaveTimerRef.current = setTimeout(async () => {
+      const requestState = state;
+      const requestUpdatedAt = requestState.updatedAt ?? 0;
+
       try {
         setCloudSyncStatus("saving");
         setCloudSyncError(null);
 
         const saved = await saveMatchToCloud(
           matchIdFromRoute,
-          state,
+          requestState,
           adminKeyForCloud,
         );
 
+        const newestLocalUpdatedAt = latestLocalUpdatedAtRef.current ?? 0;
+        if (newestLocalUpdatedAt > requestUpdatedAt) {
+          setCloudSyncStatus("saved");
+          lastCloudSavedAtRef.current = Date.now();
+          return;
+        }
+
         // Keep local state aligned with server-touched fields (updatedAt)
-        setState(saved as any);
+        setState((prev) => {
+          const prevUpdatedAt = prev?.updatedAt ?? 0;
+          const savedUpdatedAt = (saved as any)?.updatedAt ?? 0;
+          if (prevUpdatedAt > requestUpdatedAt) return prev;
+          if (savedUpdatedAt < prevUpdatedAt) return prev;
+          return saved as any;
+        });
         setCloudSyncStatus("saved");
         lastCloudSavedAtRef.current = Date.now();
       } catch (e: any) {
@@ -824,7 +902,7 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, matchIdFromRoute, isAdmin, adminKeyForCloud, cloudSyncStatus]);
+  }, [state, matchIdFromRoute, isAdmin, adminKeyForCloud]);
 
   // Near-realtime viewer updates: poll cloud state every 2s and apply if newer
   useEffect(() => {
@@ -978,6 +1056,54 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
     (window as any).__CURRENT_INNINGS__ = currentInnings;
     (window as any).__ALLBALLS__ = currentInnings.allBalls;
   }, [currentInnings.allBalls?.length]);
+
+  // Keep batter skin assignment aligned with the currently selected pair.
+  // This is defensive: it covers manual selections, substitutions, undo/redo and sync edge-cases.
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    setState((prev) => {
+      const inn = prev.innings[prev.inningsIndex];
+      const striker = String(inn.striker ?? "").trim();
+      const nonStriker = String(inn.nonStriker ?? "").trim();
+      if (!striker && !nonStriker) return prev;
+
+      const skinNumber = (inn.completedSkins?.length ?? 0) + 1;
+      const nextMap: Record<string, number> = {
+        ...(inn.batterSkinById ?? {}),
+      };
+
+      let changed = false;
+      if (striker && nextMap[striker] !== skinNumber) {
+        nextMap[striker] = skinNumber;
+        changed = true;
+      }
+      if (nonStriker && nextMap[nonStriker] !== skinNumber) {
+        nextMap[nonStriker] = skinNumber;
+        changed = true;
+      }
+
+      if (!changed) return prev;
+
+      const innings = [...prev.innings];
+      innings[prev.inningsIndex] = {
+        ...inn,
+        batterSkinById: nextMap,
+      };
+
+      return {
+        ...prev,
+        innings,
+        updatedAt: Date.now(),
+      };
+    });
+  }, [
+    isAdmin,
+    state.inningsIndex,
+    currentInnings.striker,
+    currentInnings.nonStriker,
+    currentInnings.completedSkins?.length,
+  ]);
   const isEndOfOver =
     currentInnings.balls > 0 && currentInnings.balls % 6 === 0;
   const isAtOverBreak =
@@ -1341,48 +1467,60 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
   }
 
   function setPlayers(
-    strikerId: string | "",
-    nonStrikerId: string | "",
-    bowlerId: string | "",
+    strikerId?: string,
+    nonStrikerId?: string,
+    bowlerId?: string,
   ) {
-    const inn = state.innings[state.inningsIndex];
+    setState((prev) => {
+      const inn = prev.innings[prev.inningsIndex];
 
-    const nextStriker = (strikerId || "").trim();
-    const nextNonStriker = (nonStrikerId || "").trim();
+      const nextStriker =
+        strikerId === undefined
+          ? String(inn.striker ?? "").trim()
+          : String(strikerId ?? "").trim();
+      const nextNonStriker =
+        nonStrikerId === undefined
+          ? String(inn.nonStriker ?? "").trim()
+          : String(nonStrikerId ?? "").trim();
+      const nextBowler =
+        bowlerId === undefined
+          ? String(inn.bowler ?? "").trim()
+          : String(bowlerId ?? "").trim();
 
-    // Copy existing map
-    let batterSkinById: Record<string, number> = {
-      ...(inn.batterSkinById ?? {}),
-    };
+      // Copy existing map
+      const batterSkinById: Record<string, number> = {
+        ...(inn.batterSkinById ?? {}),
+      };
 
-    // Use completedSkins array length as source of truth for which skin we're in
-    // This avoids stale state issues with skinIndex during rapid event handling
-    const skinNumber = (inn.completedSkins?.length ?? 0) + 1;
+      // Use completedSkins array length as source of truth for which skin we're in
+      // This avoids stale state issues with skinIndex during rapid event handling
+      const skinNumber = (inn.completedSkins?.length ?? 0) + 1;
 
-    if (nextStriker && batterSkinById[nextStriker] == null) {
-      batterSkinById[nextStriker] = skinNumber;
-    }
+      if (nextStriker) {
+        batterSkinById[nextStriker] = skinNumber;
+      }
 
-    if (nextNonStriker && batterSkinById[nextNonStriker] == null) {
-      batterSkinById[nextNonStriker] = skinNumber;
-    }
+      if (nextNonStriker) {
+        batterSkinById[nextNonStriker] = skinNumber;
+      }
 
-    const updated: Innings = {
-      ...inn,
-      striker: nextStriker || undefined,
-      nonStriker: nextNonStriker || undefined,
-      bowler: bowlerId || undefined,
-      batterSkinById,
-    };
+      const updated: Innings = {
+        ...inn,
+        striker: nextStriker || undefined,
+        nonStriker: nextNonStriker || undefined,
+        bowler: nextBowler || undefined,
+        batterSkinById,
+      };
 
-    const innings = [...state.innings];
-    innings[state.inningsIndex] = updated;
-    safeSet({ ...state, innings });
+      const innings = [...prev.innings];
+      innings[prev.inningsIndex] = updated;
+      return { ...prev, innings, updatedAt: Date.now() };
+    });
   }
 
   function swapBatters() {
     const inn = state.innings[state.inningsIndex];
-    setPlayers(inn.nonStriker, inn.striker, inn.bowler);
+    setPlayers(inn.nonStriker ?? "", inn.striker ?? "", inn.bowler ?? "");
   }
 
   function toggleTeamsForNextInnings() {
@@ -1487,256 +1625,259 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
   }
 
   function addEvent(ev: BallEvent) {
-    const currentInn = state.innings[state.inningsIndex];
+    let blockedToast:
+      | { title: string; description: string; variant?: "destructive" }
+      | null = null;
+    let postToast: { title: string; description: string } | null = null;
 
-    if (!isReadyToScore) {
-      toast({
-        title: "Select players first",
-        description:
-          "Please select striker, non-striker, and bowler before scoring.",
-        variant: "destructive",
-      });
-      return;
-    }
+    setState((prev) => {
+      const currentInn = prev.innings[prev.inningsIndex];
 
-    // 🚫 Require bowler selection at start of every new over
-    const isStartOfNewOver = currentInn.balls > 0 && currentInn.balls % 6 === 0;
-
-    if (isStartOfNewOver && !currentInn.bowler) {
-      toast({
-        title: "Select bowler",
-        description: "Please select a bowler to continue the next over.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    // 🚫 Prevent same bowler bowling consecutive overs
-    if (
-      isStartOfNewOver &&
-      currentInn.lastOverBowler &&
-      currentInn.bowler === currentInn.lastOverBowler &&
-      hasAlternativeBowler
-    ) {
-      toast({
-        title: "Invalid bowler",
-        description:
-          "Same bowler cannot bowl consecutive overs. Please select a different bowler.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    // 🚫 Block scoring if batters not selected
-    if (!currentInn.striker || !currentInn.nonStriker) {
-      toast({
-        title: "Select batters",
-        description: "Please select striker and non-striker to continue.",
-        variant: "destructive",
-      });
-      return;
-    }
-    // 🚫 BLOCK scoring if bowler not selected
-    if (!currentInn.bowler) {
-      toast({
-        title: "Select bowler",
-        description: "Please select a bowler to continue scoring.",
-        variant: "destructive",
-      });
-      return;
-    }
-    // Bowling validation (already working)
-
-    if (ev.countsBall) {
-      const bowler = currentInn.bowler;
-      const ballsBowled = currentInn.bowlerBalls[bowler] ?? 0;
-
-      if (ballsBowled >= 12) {
-        toast({
-          title: "Bowling limit reached",
-          description: `${bowler} has already bowled 2 overs.`,
+      // 🚫 Block scoring if batters/bowler not selected
+      if (!currentInn.striker || !currentInn.nonStriker || !currentInn.bowler) {
+        blockedToast = {
+          title: "Select players first",
+          description:
+            "Please select striker, non-striker, and bowler before scoring.",
           variant: "destructive",
-        });
-        return;
+        };
+        return prev;
       }
-    }
-    // 🚫 Skin transition check (4 overs = 24 balls)
-    const isSkinComplete =
-      currentInn.ballsInSkin === 0 &&
-      currentInn.skinIndex > 0 &&
-      !currentInn.striker &&
-      !currentInn.nonStriker;
 
-    if (isSkinComplete) {
-      toast({
-        title: "Select batters",
-        description: "Choose striker and non-striker for the new skin.",
-        variant: "destructive",
+      // 🚫 Require bowler selection at start of every new over
+      const isStartOfNewOver =
+        currentInn.balls > 0 && currentInn.balls % 6 === 0;
+      if (isStartOfNewOver && !currentInn.bowler) {
+        blockedToast = {
+          title: "Select bowler",
+          description: "Please select a bowler to continue the next over.",
+          variant: "destructive",
+        };
+        return prev;
+      }
+
+      // 🚫 Prevent same bowler bowling consecutive overs (only when an alternative exists)
+      const bowlingTeam = prev.teams?.[currentInn.bowlingTeamId];
+      const bowlingPlayersForInn: string[] = (() => {
+        if (!bowlingTeam) return [];
+        if (Array.isArray(bowlingTeam.roster) && bowlingTeam.roster.length)
+          return bowlingTeam.roster;
+        if (Array.isArray(bowlingTeam.players) && bowlingTeam.players.length)
+          return bowlingTeam.players;
+        if (
+          bowlingTeam.players &&
+          !Array.isArray(bowlingTeam.players) &&
+          typeof bowlingTeam.players === "object"
+        ) {
+          const playersMap = bowlingTeam.players as Record<string, any>;
+          return bowlingTeam.roster && bowlingTeam.roster.length
+            ? bowlingTeam.roster
+            : Object.keys(playersMap);
+        }
+        return [];
+      })();
+
+      const availableBowlers = bowlingPlayersForInn.filter((playerKey) => {
+        const balls = currentInn.bowlerBalls[playerKey] ?? 0;
+        const overs = Math.floor(balls / 6);
+        return overs < 2;
       });
-      return;
-    }
+      const hasAlternativeBowlerLocal = availableBowlers.length > 1;
 
-    const withHistory = pushHistory(state);
-    const historyInn = withHistory.innings[withHistory.inningsIndex];
+      if (
+        isStartOfNewOver &&
+        currentInn.lastOverBowler &&
+        currentInn.bowler === currentInn.lastOverBowler &&
+        hasAlternativeBowlerLocal
+      ) {
+        blockedToast = {
+          title: "Invalid bowler",
+          description:
+            "Same bowler cannot bowl consecutive overs. Please select a different bowler.",
+          variant: "destructive",
+        };
+        return prev;
+      }
 
-    const updatedInn = applyBallEvent(historyInn, ev);
+      // 🚫 Skin transition check (4 overs = 24 balls)
+      const isSkinComplete =
+        currentInn.ballsInSkin === 0 &&
+        currentInn.skinIndex > 0 &&
+        !currentInn.striker &&
+        !currentInn.nonStriker;
 
-    // 🏁 END OF MATCH (2nd innings completed)
-    if (
-      state.inningsIndex === 1 &&
-      updatedInn.completedSkins.length === TOTAL_SKINS
-    ) {
-      const innings = [...withHistory.innings];
-      innings[withHistory.inningsIndex] = updatedInn;
+      if (isSkinComplete) {
+        blockedToast = {
+          title: "Select batters",
+          description: "Choose striker and non-striker for the new skin.",
+          variant: "destructive",
+        };
+        return prev;
+      }
 
-      safeSet({
-        ...withHistory,
-        innings,
-        status: "completed",
-      });
-
-      toast({
-        title: "Match completed",
-        description: "All skins completed. Result finalized.",
-      });
-
-      return;
-    }
-
-    // 🏁 End innings AFTER final skin is completed
-
-    if (
-      updatedInn.completedSkins.length === TOTAL_SKINS &&
-      state.inningsIndex === 0
-    ) {
-      toast({
-        title: "Innings completed",
-        description: "All skins completed. Switching teams.",
-      });
-
-      // Apply updatedInn into the history state and atomically create the next innings
-      const innings = [...withHistory.innings];
-      innings[withHistory.inningsIndex] = updatedInn;
-
-      const prev = updatedInn;
-      const nextInnings: Innings = {
-        id: uid("inn"),
-
-        // 🔁 SWAP TEAMS
-        battingTeamId: prev.bowlingTeamId,
-        bowlingTeamId: prev.battingTeamId,
-
-        runs: 0,
-        wickets: 0,
-        balls: 0,
-        dotBalls: 0,
-        awaitingBatsmanSelection: false,
-
-        extras: { wide: 0, noball: 0, bye: 0, legbye: 0 },
-
-        striker: "",
-        nonStriker: "",
-        bowler: "",
-        deliveries: 0,
-        usedBatters: [],
-
-        // NEW: reset fixed skin assignment map for the new innings
-        batterSkinById: {},
-
-        overEvents: [],
-        lastOverSummary: [],
-        allBalls: [],
-
-        // 🔁 RESET SKIN STATE
-        skinIndex: 0,
-        ballsInSkin: 0,
-        currentSkin: {
-          grossRuns: 0,
-          wickets: 0,
-        },
-        completedSkins: [],
-
-        // 🔁 RESET BOWLING STATE
-        bowlerBalls: {},
-        lastOverBowler: null,
+      let nextEvent: BallEvent = {
+        ...ev,
+        strikerAtEvent: ev.strikerAtEvent ?? currentInn.striker,
+        nonStrikerAtEvent: ev.nonStrikerAtEvent ?? currentInn.nonStriker,
+        bowlerAtEvent: ev.bowlerAtEvent ?? currentInn.bowler,
       };
 
-      safeSet(
-        pushHistory({
+      // Auto wicket on 3rd consecutive dot ball (evaluate against latest queued state)
+      if (nextEvent.type === "dot") {
+        const nextDotCount = (currentInn.dotBalls ?? 0) + 1;
+        if (nextDotCount === 3) {
+          nextEvent = {
+            ...nextEvent,
+            type: "wicket",
+            runs: 0,
+            countsBall: true,
+            isWicket: true,
+            note: "Auto OUT (3 dot balls)",
+            batterRuns: 0,
+          };
+        }
+      }
+
+      // Indoor extras rule and final-over legal-ball rule evaluated against latest state
+      if (nextEvent.type === "wide" || nextEvent.type === "noball") {
+        const currentOver = Math.floor(currentInn.balls / 6) + 1;
+        const oversLimit = clamp(prev.oversLimit ?? 16, 1, 50);
+        nextEvent = {
+          ...nextEvent,
+          countsBall: currentOver < oversLimit,
+        };
+      }
+
+      // Bowling validation (already working)
+      if (nextEvent.countsBall) {
+        const bowler = currentInn.bowler;
+        const ballsBowled = currentInn.bowlerBalls[bowler] ?? 0;
+
+        if (ballsBowled >= 12) {
+          blockedToast = {
+            title: "Bowling limit reached",
+            description: `${bowler} has already bowled 2 overs.`,
+            variant: "destructive",
+          };
+          return prev;
+        }
+      }
+
+      const withHistory = pushHistory(prev);
+      const historyInn = withHistory.innings[withHistory.inningsIndex];
+
+      const updatedInn = applyBallEvent(historyInn, nextEvent);
+
+      // 🏁 END OF MATCH (2nd innings completed)
+      if (
+        withHistory.inningsIndex === 1 &&
+        updatedInn.completedSkins.length === TOTAL_SKINS
+      ) {
+        const innings = [...withHistory.innings];
+        innings[withHistory.inningsIndex] = updatedInn;
+
+        postToast = {
+          title: "Match completed",
+          description: "All skins completed. Result finalized.",
+        };
+
+        return {
+          ...withHistory,
+          innings,
+          status: "completed",
+          updatedAt: Date.now(),
+        };
+      }
+
+      // 🏁 End innings AFTER final skin is completed
+      if (
+        updatedInn.completedSkins.length === TOTAL_SKINS &&
+        withHistory.inningsIndex === 0
+      ) {
+        postToast = {
+          title: "Innings completed",
+          description: "All skins completed. Switching teams.",
+        };
+
+        const innings = [...withHistory.innings];
+        innings[withHistory.inningsIndex] = updatedInn;
+
+        const previousInnings = updatedInn;
+        const nextInnings: Innings = {
+          id: uid("inn"),
+          battingTeamId: previousInnings.bowlingTeamId,
+          bowlingTeamId: previousInnings.battingTeamId,
+          runs: 0,
+          wickets: 0,
+          balls: 0,
+          dotBalls: 0,
+          awaitingBatsmanSelection: false,
+          extras: { wide: 0, noball: 0, bye: 0, legbye: 0 },
+          striker: "",
+          nonStriker: "",
+          bowler: "",
+          deliveries: 0,
+          usedBatters: [],
+          batterSkinById: {},
+          overEvents: [],
+          lastOverSummary: [],
+          allBalls: [],
+          skinIndex: 0,
+          ballsInSkin: 0,
+          currentSkin: { grossRuns: 0, wickets: 0 },
+          completedSkins: [],
+          bowlerBalls: {},
+          lastOverBowler: null,
+        };
+
+        return {
           ...withHistory,
           innings: [...innings, nextInnings],
           inningsIndex: withHistory.inningsIndex + 1,
           status: "live",
-        }),
-      );
+          updatedAt: Date.now(),
+        };
+      }
 
-      return;
+      // ✅ Detect end of over
+      const isEndOfOver = nextEvent.countsBall && updatedInn.balls % 6 === 0;
+
+      const finalInn: Innings = {
+        ...updatedInn,
+        usedBatters: updatedInn.usedBatters ?? historyInn.usedBatters ?? [],
+        lastOverBowler: isEndOfOver
+          ? historyInn.bowler
+          : historyInn.lastOverBowler,
+        bowler: isEndOfOver ? "" : updatedInn.bowler,
+      };
+
+      const innings = [...withHistory.innings];
+      innings[withHistory.inningsIndex] = finalInn;
+
+      return {
+        ...withHistory,
+        innings,
+        status: "live",
+        updatedAt: Date.now(),
+      };
+    });
+
+    if (blockedToast) {
+      toast(blockedToast as any);
     }
-
-    // ✅ Detect end of over
-    const isEndOfOver = ev.countsBall && updatedInn.balls % 6 === 0;
-
-    const finalInn: Innings = {
-      ...updatedInn,
-
-      // 🔒 PRESERVE used batters across state rebuilds
-      usedBatters: updatedInn.usedBatters ?? historyInn.usedBatters ?? [],
-
-      lastOverBowler: isEndOfOver
-        ? historyInn.bowler
-        : historyInn.lastOverBowler,
-
-      bowler: isEndOfOver ? "" : updatedInn.bowler,
-    };
-
-    const innings = [...withHistory.innings];
-    innings[withHistory.inningsIndex] = finalInn;
-
-    safeSet({ ...withHistory, innings, status: "live" });
+    if (postToast) {
+      toast(postToast);
+    }
   }
 
   function addRun(runs: number) {
-    if (!isReadyToScore) {
-      toast({
-        title: "Select players first",
-        description:
-          "Please select striker, non-striker, and bowler before scoring.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const inn = state.innings[state.inningsIndex];
-
     if (runs === 0) {
-      const nextDotCount = inn.dotBalls + 1;
-
-      if (nextDotCount === 3) {
-        addEvent({
-          id: uid("ball"),
-          ts: Date.now(),
-          type: "wicket",
-          runs: 0,
-          countsBall: true,
-          isWicket: true,
-          note: "Auto OUT (3 dot balls)",
-          strikerAtEvent: inn.striker,
-          nonStrikerAtEvent: inn.nonStriker,
-          bowlerAtEvent: inn.bowler,
-          batterRuns: 0,
-        });
-        return;
-      }
-
       addEvent({
         id: uid("ball"),
         ts: Date.now(),
         type: "dot",
         runs: 0,
         countsBall: true,
-        strikerAtEvent: inn.striker,
-        nonStrikerAtEvent: inn.nonStriker,
-        bowlerAtEvent: inn.bowler,
         batterRuns: 0,
       });
       return;
@@ -1748,9 +1889,6 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
       type: "run",
       runs,
       countsBall: true,
-      strikerAtEvent: inn.striker,
-      nonStrikerAtEvent: inn.nonStriker,
-      bowlerAtEvent: inn.bowler,
       batterRuns: runs,
     });
   }
@@ -2072,41 +2210,17 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
   // --- END addWicket replacement ---
 
   function addExtra(type: "wide" | "noball" | "bye" | "legbye", runs: number) {
-    if (!isReadyToScore) {
-      toast({
-        title: "Select players first",
-        description:
-          "Please select striker, non-striker, and bowler before scoring.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const inn = state.innings[state.inningsIndex];
-
-    // Use total legal balls for current over (inn.balls is incremented only for legal balls)
-    const currentOver = Math.floor(inn.balls / 6) + 1;
-
     const isWideOrNoBall = type === "wide" || type === "noball";
 
     // Indoor rule: Wide / No Ball = 2 default runs + selected runs
     const totalRuns = isWideOrNoBall ? runs + 2 : runs;
-
-    // Use configured overs limit (fallback to 16)
-    const oversLimit = clamp(state.oversLimit ?? 16, 1, 50);
-
-    // Wide/No-ball count as a legal delivery only for overs before the final over
-    const countsBall = isWideOrNoBall ? currentOver < oversLimit : true;
 
     addEvent({
       id: uid("ball"),
       ts: Date.now(),
       type,
       runs: totalRuns,
-      countsBall,
-      strikerAtEvent: inn.striker,
-      nonStrikerAtEvent: inn.nonStriker,
-      bowlerAtEvent: inn.bowler,
+      countsBall: true,
       batterRuns: 0,
     });
   }
@@ -2146,7 +2260,16 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
   async function copy(text: string, label: string) {
     try {
       await navigator.clipboard.writeText(text);
-      toast({ title: "Copied", description: label });
+      if (isLocalHostUrl(text)) {
+        toast({
+          title: "Copied (local link)",
+          description:
+            "This link uses localhost and won’t open on phone. Use deployed URL, LAN IP, or set NEXT_PUBLIC_SHARE_ORIGIN.",
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: "Copied", description: label });
+      }
     } catch {
       toast({ title: "Couldn’t copy", description: text });
     }
@@ -3058,11 +3181,7 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                           isBatterSelectionLocked
                         }
                         onChange={(e) =>
-                          setPlayers(
-                            e.target.value,
-                            currentInnings.nonStriker,
-                            currentInnings.bowler,
-                          )
+                          setPlayers(e.target.value, undefined, undefined)
                         }
                       >
                         {/* Striker */}
@@ -3116,11 +3235,7 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                           isBatterSelectionLocked
                         }
                         onChange={(e) =>
-                          setPlayers(
-                            currentInnings.striker,
-                            e.target.value,
-                            currentInnings.bowler,
-                          )
+                          setPlayers(undefined, e.target.value, undefined)
                         }
                       >
                         {/* Non-Striker */}
@@ -3232,14 +3347,17 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                           }
 
                           // proceed with existing setting behaviour
-                          const updated: Innings = {
-                            ...inn,
-                            bowler: value,
-                          };
+                          setState((prev) => {
+                            const nextInn = prev.innings[prev.inningsIndex];
+                            const updated: Innings = {
+                              ...nextInn,
+                              bowler: value,
+                            };
 
-                          const innings = [...state.innings];
-                          innings[state.inningsIndex] = updated;
-                          safeSet({ ...state, innings });
+                            const innings = [...prev.innings];
+                            innings[prev.inningsIndex] = updated;
+                            return { ...prev, innings, updatedAt: Date.now() };
+                          });
                         }}
                       >
                         {/* Bowler */}
@@ -3999,13 +4117,30 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
 
               const withHistory = pushHistory(state);
               const prevInn = withHistory.innings[innIndex];
+              const currentSkinNumber =
+                (prevInn.completedSkins?.length ?? 0) + 1;
+              const nextSkinMap: Record<string, number> = {
+                ...(prevInn.batterSkinById ?? {}),
+              };
+
+              const nextStriker =
+                prevInn.striker === oldId ? newId : prevInn.striker;
+              const nextNonStriker =
+                prevInn.nonStriker === oldId ? newId : prevInn.nonStriker;
+
+              if (nextStriker) {
+                nextSkinMap[nextStriker] = currentSkinNumber;
+              }
+              if (nextNonStriker) {
+                nextSkinMap[nextNonStriker] = currentSkinNumber;
+              }
 
               const nextInn: Innings = {
                 ...prevInn,
-                striker: prevInn.striker === oldId ? newId : prevInn.striker,
-                nonStriker:
-                  prevInn.nonStriker === oldId ? newId : prevInn.nonStriker,
+                striker: nextStriker,
+                nonStriker: nextNonStriker,
                 bowler: prevInn.bowler === oldId ? newId : prevInn.bowler,
+                batterSkinById: nextSkinMap,
                 allBalls: [
                   ...(prevInn.allBalls ?? []),
                   {
