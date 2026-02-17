@@ -1,6 +1,11 @@
 import type { AppProps } from "next/app";
-import "../index.css"; // adjust if your css file is at a different path
+import App from "../App";
+import "../index.css";
 
 export default function MyApp({ Component, pageProps }: AppProps) {
-  return <Component {...pageProps} />;
+  return (
+    <App>
+      <Component {...pageProps} />
+    </App>
+  );
 }

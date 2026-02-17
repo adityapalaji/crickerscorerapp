@@ -1,4 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from "next";
+import { validateProductionEnv } from "../../lib/validateEnv";
 
 const API_VERSION = "2026-02-13";
 
@@ -6,6 +7,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== "GET") {
     res.setHeader("Allow", ["GET"]);
     return res.status(405).end(`Method ${req.method} Not Allowed`);
+  }
+
+  // Validate production environment on first health check
+  try {
+    validateProductionEnv();
+  } catch (err: any) {
+    return res.status(500).json({
+      ok: false,
+      error: "Production environment validation failed",
+      details: err?.message ?? String(err),
+      meta: { version: API_VERSION },
+    });
   }
 
   const isProd = process.env.NODE_ENV === "production";

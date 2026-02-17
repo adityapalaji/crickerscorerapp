@@ -6,7 +6,14 @@ let kv: any = null;
 let kvInitialized = false;
 let kvError: Error | null = null;
 
-const isProd = process.env.NODE_ENV === "production";
+/**
+ * Determine if running in production.
+ * NOTE: NODE_ENV must be explicitly set in Vercel environment variables!
+ * If undefined, we assume production for safety.
+ */
+const isProd =
+  process.env.NODE_ENV === "production" ||
+  (process.env.NODE_ENV !== "development" && process.env.KV_REST_API_URL);
 
 /**
  * Initialize and return Vercel KV client.
@@ -45,13 +52,14 @@ async function getKv() {
     kvInitialized = true;
 
     // In production, MUST NOT fallback silently
+    // Per Next.js, NODE_ENV is "production" or "test" during build
     if (isProd) {
       throw new Error(
         `Vercel KV initialization failed (required in production): ${kvError.message}`,
       );
     }
 
-    // In development, allow null return for in-memory fallback
+    // In non-production (test/dev), allow null return for in-memory fallback
     return null;
   }
 }
@@ -80,7 +88,7 @@ export async function loadMatchState(matchId: string): Promise<MatchState | null
       if (isProd) {
         throw new Error(`KV read failed for match ${matchId}: ${err}`);
       }
-      // In development, fall back to memory
+      // In non-production, fall back to memory
     }
   }
 
@@ -108,7 +116,7 @@ export async function saveMatchState(
       if (isProd) {
         throw new Error(`KV write failed for match ${matchId}: ${err}`);
       }
-      // In development, fall back to memory
+      // In non-production, fall back to memory
     }
   }
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import dynamic from "next/dynamic";
-import { useLocation, useRoute } from "wouter";
+import { useRouter } from "next/router";
 import { motion } from "framer-motion";
 // near other imports
 import ManageRoster from "../components/ui/ManageRoster"; // adjust path if needed
@@ -689,36 +689,26 @@ interface ScoringAppProps {
   matchIdFromRoute?: string;
 }
 function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
+  const router = useRouter();
   const [showFullScoreboard, setShowFullScoreboard] = useState(false);
 
   const { toast } = useToast();
-  const [, params] = useRoute<{ matchId: string }>("/match/:matchId");
-  const routeMatchId = params ? params.matchId : null;
-  const matchId = matchIdFromRoute ?? routeMatchId ?? null;
+  
+  // In Next.js, the matchId comes from the page props (matchIdFromRoute)
+  // from src/pages/match/[matchId].tsx
+  const matchId = matchIdFromRoute;
 
-  const [location, setLocation] = useLocation();
   const [activeTab, setActiveTab] = useState<"controls" | "players" | "match">(
     "controls",
   );
-
-  const url = useMemo(() => {
-    if (typeof window === "undefined") {
-      return new URL(`http://localhost${location ?? ""}`);
-    }
-    return new URL(window.location.href);
-  }, [location]);
-
   const [isRosterOpen, setRosterOpen] = useState(false);
   const [coinFlipResult, setCoinFlipResult] = useState<"HEADS" | "TAILS" | null>(null);
   const [showCoinFlip, setShowCoinFlip] = useState(false);
 
+  // Parse URL query parameters from Next.js router
   const roleFromUrl =
-    (getQueryParam(url.search, "mode") as Role | null) ?? "admin";
-  // Keep the admin key from the URL stable across renders.
-  // (In some cases wouter's location updates can cause search parsing to momentarily drop values.)
-  const [keyFromUrl] = useState<string | null>(() =>
-    getQueryParam(url.search, "key"),
-  );
+    (router.query.mode as Role | undefined) ?? "admin";
+  const keyFromUrl = (router.query.key as string | undefined) ?? null;
   const isExplicitAdminRequest = roleFromUrl === "admin";
 
   const [state, setState] = useState<MatchState>(() => {
@@ -1199,12 +1189,17 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
   }, [state]);
 
   useEffect(() => {
-    if (!matchIdFromRoute) {
-      const next = `/match/${encodeURIComponent(state.matchId)}${url.search}`;
-      setLocation(next, { replace: true });
+    if (!matchIdFromRoute && state.matchId && router.isReady) {
+      // Build query string from current role and key
+      const queryParams = new URLSearchParams();
+      if (roleFromUrl) queryParams.set("mode", roleFromUrl);
+      if (keyFromUrl) queryParams.set("key", keyFromUrl);
+      const queryStr = queryParams.toString();
+      const next = `/match/${encodeURIComponent(state.matchId)}${queryStr ? "?" + queryStr : ""}`;
+      router.replace(next);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [matchIdFromRoute, state.matchId]);
+  }, [matchIdFromRoute, state.matchId, router]);
 
   function safeSet(next: MatchState) {
     setState({ ...next, updatedAt: Date.now() });
@@ -1289,9 +1284,9 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
     (async () => {
       try {
         const created = await createMatchInCloud();
-        // Navigate using a relative path so wouter manages it.
-        const nextPath = created.adminUrl.replace(window.location.origin, "");
-        setLocation(nextPath, { replace: true });
+        // Navigate to the new match using Next.js router
+        const nextPath = `/match/${encodeURIComponent(created.matchId)}?mode=admin&key=${encodeURIComponent(created.adminKey)}`;
+        router.push(nextPath);
         toast({
           title: "New match created",
           description: "Share the viewer link for spectators.",
@@ -2284,7 +2279,7 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
               onClick={() => {
                 // Viewer shouldn't land on an Admin-focused start screen.
                 // Keep them in viewer mode on the home page.
-                window.location.href = isAdmin ? "/" : "/?mode=viewer";
+                router.push(isAdmin ? "/" : "/?mode=viewer");
               }}
               data-testid="button-back-home"
             >

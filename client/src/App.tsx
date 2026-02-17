@@ -1,30 +1,24 @@
-import { Switch, Route } from "wouter";
+/**
+ * App.tsx - Root providers wrapper
+ * 
+ * NOTE: Routing is handled by Next.js Pages Router in production
+ * (src/pages/index.tsx, src/pages/match/[matchId].tsx, etc.)
+ * 
+ * This component is only used as a client-side providers wrapper.
+ * Do NOT add routing logic here (use Next.js pages instead).
+ */
+
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import NotFound from "@/pages/not-found";
-import ScoringApp from "./pages/scoring-app";
-import dynamic from "next/dynamic";
 
-const HomeLanding = dynamic(() => import("./pages/home"), { ssr: false });
-
-function Router() {
-  return (
-    <Switch>
-      <Route path="/">{() => <HomeLanding />}</Route>
-      <Route path="/match/:matchId">{() => <ScoringApp />}</Route>
-      <Route component={NotFound} />
-    </Switch>
-  );
-}
-
-function App() {
+function App({ children }: { children?: React.ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
-        <Router />
+        {children}
       </TooltipProvider>
     </QueryClientProvider>
   );
