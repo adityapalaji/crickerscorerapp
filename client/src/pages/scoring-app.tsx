@@ -1077,7 +1077,9 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
 
   // 🚦 Skin break: 4 overs completed, new batters not selected yet
   const isSkinBreak =
-    currentInnings.completedSkins.length > 0 &&
+    currentInnings.balls > 0 &&
+    currentInnings.ballsInSkin === 0 &&
+    currentInnings.skinIndex > 0 &&
     (!currentInnings.striker || !currentInnings.nonStriker);
 
   useEffect(() => {
@@ -1353,8 +1355,9 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
       ...(inn.batterSkinById ?? {}),
     };
 
-    // If striker doesn't have a skin yet → assign current skin + 1
-    const skinNumber = (inn.skinIndex ?? 0) + 1;
+    // Use completedSkins array length as source of truth for which skin we're in
+    // This avoids stale state issues with skinIndex during rapid event handling
+    const skinNumber = (inn.completedSkins?.length ?? 0) + 1;
 
     if (nextStriker && batterSkinById[nextStriker] == null) {
       batterSkinById[nextStriker] = skinNumber;
