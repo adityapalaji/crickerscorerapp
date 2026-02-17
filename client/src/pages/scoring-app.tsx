@@ -3552,19 +3552,33 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                   <div className="text-sm">
                     <div className="text-xs text-muted-foreground">Score</div>
 
-                    <div className="font-medium">
-                      {`${state.teams.a.name}: Net ${computeInningsNet(state.innings[0])} (Gross ${state.innings[0]?.runs ?? 0}, Outs ${state.innings[0]?.wickets ?? 0}) • Overs ${formatOvers(state.innings[0]?.balls ?? 0, state.oversLimit)}`}
-                    </div>
+                    {(() => {
+                      const teamAInnings = state.innings.find((inn) => inn.battingTeamId === "a");
+                      const teamBInnings = state.innings.find((inn) => inn.battingTeamId === "b");
+                      return (
+                        <>
+                          <div className="font-medium">
+                            {teamAInnings
+                              ? `${state.teams.a.name}: Net ${computeInningsNet(teamAInnings)} (Gross ${teamAInnings.runs ?? 0}, Outs ${teamAInnings.wickets ?? 0}) • Overs ${formatOvers(teamAInnings.balls ?? 0, state.oversLimit)}`
+                              : `${state.teams.a.name}: —`}
+                          </div>
 
-                    <div className="font-medium mt-1">
-                      {`${state.teams.b.name}: Net ${computeInningsNet(state.innings[1])} (Gross ${state.innings[1]?.runs ?? 0}, Outs ${state.innings[1]?.wickets ?? 0}) • Overs ${formatOvers(state.innings[1]?.balls ?? 0, state.oversLimit)}`}
-                    </div>
+                          <div className="font-medium mt-1">
+                            {teamBInnings
+                              ? `${state.teams.b.name}: Net ${computeInningsNet(teamBInnings)} (Gross ${teamBInnings.runs ?? 0}, Outs ${teamBInnings.wickets ?? 0}) • Overs ${formatOvers(teamBInnings.balls ?? 0, state.oversLimit)}`
+                              : `${state.teams.b.name}: —`}
+                          </div>
+                        </>
+                      );
+                    })()}
 
                     {/* Result / winner line (ONLY shown when match is completed) */}
                     <div className="mt-3">
                       {(() => {
-                        const aTotal = computeInningsNet(state.innings[0]);
-                        const bTotal = computeInningsNet(state.innings[1]);
+                        const teamAInnings = state.innings.find((inn) => inn.battingTeamId === "a");
+                        const teamBInnings = state.innings.find((inn) => inn.battingTeamId === "b");
+                        const aTotal = teamAInnings ? computeInningsNet(teamAInnings) : 0;
+                        const bTotal = teamBInnings ? computeInningsNet(teamBInnings) : 0;
 
                         if (state.status === "completed") {
                           if (aTotal > bTotal) {
@@ -3603,8 +3617,10 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                     aria-label="Share match summary on WhatsApp"
                     onClick={() => {
                       try {
-                        const aTotal = computeInningsNet(state.innings[0]);
-                        const bTotal = computeInningsNet(state.innings[1]);
+                        const teamAInnings = state.innings.find((inn) => inn.battingTeamId === "a");
+                        const teamBInnings = state.innings.find((inn) => inn.battingTeamId === "b");
+                        const aTotal = teamAInnings ? computeInningsNet(teamAInnings) : 0;
+                        const bTotal = teamBInnings ? computeInningsNet(teamBInnings) : 0;
 
                         const lines: string[] = [];
                         lines.push(
@@ -3627,10 +3643,10 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
 
                         // Score lines
                         lines.push(
-                          `${state.teams.a.name}: Net ${aTotal} (Gross ${state.innings[0]?.runs ?? 0}, Outs ${state.innings[0]?.wickets ?? 0}) • Overs ${formatOvers(state.innings[0]?.balls ?? 0, state.oversLimit)}`,
+                          `${state.teams.a.name}: Net ${aTotal} (Gross ${teamAInnings?.runs ?? 0}, Outs ${teamAInnings?.wickets ?? 0}) • Overs ${formatOvers(teamAInnings?.balls ?? 0, state.oversLimit)}`,
                         );
                         lines.push(
-                          `${state.teams.b.name}: Net ${bTotal} (Gross ${state.innings[1]?.runs ?? 0}, Outs ${state.innings[1]?.wickets ?? 0}) • Overs ${formatOvers(state.innings[1]?.balls ?? 0, state.oversLimit)}`,
+                          `${state.teams.b.name}: Net ${bTotal} (Gross ${teamBInnings?.runs ?? 0}, Outs ${teamBInnings?.wickets ?? 0}) • Overs ${formatOvers(teamBInnings?.balls ?? 0, state.oversLimit)}`,
                         );
 
                         // Result / winner text (only include explicit Result when match is completed)
@@ -3761,14 +3777,16 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                         return null;
                       }
 
-                      const aNet = getSkinNet(state.innings[0], skin);
-                      const bNet = getSkinNet(state.innings[1], skin);
+                      const teamAInnings = state.innings.find((inn) => inn.battingTeamId === "a");
+                      const teamBInnings = state.innings.find((inn) => inn.battingTeamId === "b");
+                      const aNet = getSkinNet(teamAInnings, skin);
+                      const bNet = getSkinNet(teamBInnings, skin);
 
                       // Only declare a winner after BOTH teams have completed this skin.
                       const aCompleted =
-                        !!state.innings[0]?.completedSkins?.[skin];
+                        !!teamAInnings?.completedSkins?.[skin];
                       const bCompleted =
-                        !!state.innings[1]?.completedSkins?.[skin];
+                        !!teamBInnings?.completedSkins?.[skin];
 
                       let winner = "—";
 
@@ -3788,16 +3806,16 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                       }
 
                       // helper to read finishing pair (if any) for an innings' completed skin
-                      const finishingPairFor = (innIdx: 0 | 1) => {
-                        const innings = state.innings[innIdx];
+                      const finishingPairFor = (teamId: "a" | "b") => {
+                        const innings = teamId === "a" ? teamAInnings : teamBInnings;
                         const entry = innings?.completedSkins?.[skin];
                         return entry?.batters && entry.batters.length
                           ? entry.batters
                           : null;
                       };
 
-                      const aPair = finishingPairFor(0);
-                      const bPair = finishingPairFor(1);
+                      const aPair = finishingPairFor("a");
+                      const bPair = finishingPairFor("b");
 
                       return (
                         <div
