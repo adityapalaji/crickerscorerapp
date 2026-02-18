@@ -1,5 +1,5 @@
 import { useRouter } from "next/router";
-import ScoringApp from "../scoring-app";
+import ScoringApp from "../../components/ScoringApp";
 
 export default function MatchPage() {
     const router = useRouter();
