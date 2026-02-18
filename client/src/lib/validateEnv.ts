@@ -14,12 +14,8 @@ export function validateProductionEnv() {
   // Production: validate all required variables
   const errors: string[] = [];
 
-  if (!process.env.KV_REST_API_URL) {
-    errors.push("Missing KV_REST_API_URL in production");
-  }
-
-  if (!process.env.KV_REST_API_TOKEN) {
-    errors.push("Missing KV_REST_API_TOKEN in production");
+  if (!process.env.DATABASE_URL) {
+    errors.push("Missing DATABASE_URL in production");
   }
 
   if (!process.env.NODE_ENV) {
@@ -34,5 +30,5 @@ export function validateProductionEnv() {
     );
   }
 
-  console.log("✅ Production environment validated successfully");
+  console.log("✅ Production environment validated successfully (DATABASE_URL configured)");
 }

@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { validateProductionEnv } from "../../lib/validateEnv";
+import { checkPgHealth } from "../../lib/postgresStore";
 
 const API_VERSION = "2026-02-13";
 
@@ -23,39 +24,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const isProd = process.env.NODE_ENV === "production";
 
-  // If KV isn't configured, @vercel/kv may still import, but kv operations will fail.
-  // We intentionally make health reflect that in production.
   try {
-    const mod = await import("@vercel/kv");
-    const kv = mod.kv as any;
+    // Test Postgres connectivity
+    const pgHealthy = await checkPgHealth();
 
-    // Minimal read/write probe. Using a short-lived key avoids polluting data.
-    const key = `health:${Date.now()}:${Math.random().toString(16).slice(2)}`;
-    const payload = { ok: true, at: Date.now() };
-
-    await kv.set(key, payload, { ex: 30 });
-    const got = await kv.get(key);
-
-    if (!got) {
-      // Treat missing read-after-write as unhealthy.
-      throw new Error("KV probe failed: unable to read back written value");
+    if (!pgHealthy) {
+      throw new Error("Postgres health check failed");
     }
 
     return res.status(200).json({
       ok: true,
-      kv: { ok: true },
+      database: { ok: true, type: "postgres" },
       meta: { version: API_VERSION },
     });
   } catch (err: any) {
     const message = err?.message ?? String(err);
 
     // In production, surface this as an unhealthy status.
-    // In dev, you might not have KV configured; still helpful to see that explicitly.
+    // In dev, you might not have DATABASE_URL configured; still helpful to see that explicitly.
     return res.status(isProd ? 503 : 200).json({
       ok: !isProd,
-      kv: { ok: false, error: message },
+      database: { ok: false, error: message, type: "postgres" },
       meta: { version: API_VERSION },
     });
   }
 }
-
