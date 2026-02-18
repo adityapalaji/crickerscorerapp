@@ -12,6 +12,7 @@ import {
   Crown,
   Eye,
   RotateCcw,
+  Share2,
   Undo2,
   Pencil,
   Trash2,
@@ -650,6 +651,10 @@ function getOrigin() {
   return typeof window === "undefined" ? "http://localhost" : window.location.origin;
 }
 
+function buildViewerLink(matchId: string) {
+  // use the same route this page is mounted on
+  return `${getOrigin()}/match/${encodeURIComponent(matchId)}?mode=viewer`;
+}
 
 function buildAdminLink(matchId: string, adminKey: string) {
   return `${getOrigin()}/match/${encodeURIComponent(matchId)}?mode=admin&key=${encodeURIComponent(adminKey)}`;
@@ -2243,7 +2248,11 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
   const isOverLimitReached =
     Math.floor(currentInnings.balls / 6) >= clamp(state.oversLimit, 1, 50);
 
-    const adminLink = useMemo(
+  const viewerLink = useMemo(
+    () => buildViewerLink(state.matchId),
+    [state.matchId],
+  );
+  const adminLink = useMemo(
     () => buildAdminLink(state.matchId, state.adminKey),
     [state.matchId, state.adminKey],
   );
@@ -2468,6 +2477,15 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
                   </div>
 
                   <div className="flex flex-col items-end gap-2">
+                    <Button
+                      variant="outline"
+                      className="tap pressable"
+                      onClick={() => copy(viewerLink, "Viewer link copied")}
+                      data-testid="button-copy-viewer-link"
+                    >
+                      <Share2 className="h-4 w-4" />
+                      <span className="hidden sm:inline">Share viewer</span>
+                    </Button>
                     {isAdmin ? (
                       <Button
                         variant="outline"
