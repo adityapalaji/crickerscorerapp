@@ -153,9 +153,9 @@ export async function saveMatchState(
     try {
       await pgClientInstance`
         INSERT INTO matches (id, state, updated_at, created_at)
-        VALUES (${matchId}, ${JSON.stringify(state)}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (${matchId}, ${state}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT (id) DO UPDATE
-        SET state = ${JSON.stringify(state)}, updated_at = CURRENT_TIMESTAMP
+        SET state = ${state}, updated_at = CURRENT_TIMESTAMP
       `;
 
       return state;
