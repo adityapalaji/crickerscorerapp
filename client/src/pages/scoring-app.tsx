@@ -336,9 +336,9 @@ function loadMatch(matchId: string): MatchState | null {
   return null;
 }
 
-function defaultMatch(matchId?: string): MatchState {
+function defaultMatch(matchId?: string, adminKeyOverride?: string): MatchState {
   const id = matchId ?? uid("match");
-  const adminKey = uid("admin");
+  const adminKey = adminKeyOverride ?? uid("admin");
 
   const baseInnings: Innings = {
     id: uid("inn"),
@@ -767,7 +767,11 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
     const matchId = matchIdFromRoute ?? "default";
     const stored = loadMatch(matchId);
     const seed =
-      stored ?? defaultMatch(matchId === "default" ? undefined : matchId);
+      stored ??
+      defaultMatch(
+        matchId === "default" ? undefined : matchId,
+        keyFromUrl ?? undefined,
+      );
     return seed;
   });
 
@@ -793,10 +797,14 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
   const lastCloudSavedAtRef = useRef<number>(0);
   const cloudSaveTimerRef = useRef<any>(null);
   const latestLocalUpdatedAtRef = useRef<number>(state.updatedAt ?? 0);
+  const latestStateRef = useRef<MatchState>(state);
+  const pendingCloudSyncRef = useRef(false);
+  const reconnectSyncInFlightRef = useRef(false);
 
   useEffect(() => {
     latestLocalUpdatedAtRef.current = state.updatedAt ?? 0;
-  }, [state.updatedAt]);
+    latestStateRef.current = state;
+  }, [state]);
 
   // Load from cloud once when opening a match link (device handoff)
   useEffect(() => {
@@ -819,6 +827,7 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
           } catch {
             // ignore
           }
+          pendingCloudSyncRef.current = false;
           setCloudSyncStatus("saved");
           lastCloudSavedAtRef.current = Date.now();
         } else {
@@ -858,6 +867,15 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
       const requestState = state;
       const requestUpdatedAt = requestState.updatedAt ?? 0;
 
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        pendingCloudSyncRef.current = true;
+        setCloudSyncStatus("error");
+        setCloudSyncError(
+          "Offline: changes saved locally and will sync when back online.",
+        );
+        return;
+      }
+
       try {
         setCloudSyncStatus("saving");
         setCloudSyncError(null);
@@ -883,9 +901,11 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
           if (savedUpdatedAt < prevUpdatedAt) return prev;
           return saved as any;
         });
+        pendingCloudSyncRef.current = false;
         setCloudSyncStatus("saved");
         lastCloudSavedAtRef.current = Date.now();
       } catch (e: any) {
+        pendingCloudSyncRef.current = true;
         setCloudSyncStatus("error");
         setCloudSyncError(e?.message ?? "Cloud save failed");
       }
@@ -898,6 +918,80 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, matchIdFromRoute, isAdmin, adminKeyForCloud]);
+
+  // Retry pending admin cloud sync when internet returns (or periodic heartbeat).
+  useEffect(() => {
+    if (!matchIdFromRoute) return;
+    if (!isAdmin) return;
+
+    let cancelled = false;
+
+    const flushPendingSync = async () => {
+      if (cancelled) return;
+      if (!pendingCloudSyncRef.current) return;
+      if (reconnectSyncInFlightRef.current) return;
+      if (typeof navigator !== "undefined" && !navigator.onLine) return;
+
+      reconnectSyncInFlightRef.current = true;
+      const requestState = latestStateRef.current;
+      const requestUpdatedAt = requestState?.updatedAt ?? 0;
+
+      try {
+        setCloudSyncStatus("saving");
+        setCloudSyncError(null);
+
+        const saved = await saveMatchToCloud(
+          matchIdFromRoute,
+          requestState,
+          adminKeyForCloud,
+        );
+        if (cancelled) return;
+
+        pendingCloudSyncRef.current = false;
+
+        const newestLocalUpdatedAt = latestLocalUpdatedAtRef.current ?? 0;
+        if (newestLocalUpdatedAt <= requestUpdatedAt) {
+          setState((prev) => {
+            const prevUpdatedAt = prev?.updatedAt ?? 0;
+            const savedUpdatedAt = (saved as any)?.updatedAt ?? 0;
+            if (savedUpdatedAt < prevUpdatedAt) return prev;
+            return saved as any;
+          });
+        }
+
+        setCloudSyncStatus("saved");
+        lastCloudSavedAtRef.current = Date.now();
+      } catch (e: any) {
+        pendingCloudSyncRef.current = true;
+        setCloudSyncStatus("error");
+        setCloudSyncError(e?.message ?? "Cloud sync retry failed");
+      } finally {
+        reconnectSyncInFlightRef.current = false;
+      }
+    };
+
+    const onOnline = () => {
+      void flushPendingSync();
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("online", onOnline);
+    }
+
+    const heartbeatId = setInterval(() => {
+      void flushPendingSync();
+    }, 15000);
+
+    void flushPendingSync();
+
+    return () => {
+      cancelled = true;
+      if (typeof window !== "undefined") {
+        window.removeEventListener("online", onOnline);
+      }
+      clearInterval(heartbeatId);
+    };
+  }, [matchIdFromRoute, isAdmin, adminKeyForCloud]);
 
   // Near-realtime viewer updates: poll cloud state every 2s and apply if newer
   useEffect(() => {
@@ -1411,8 +1505,14 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
         const nextPath = `/match/${encodeURIComponent(created.matchId)}?mode=admin&key=${encodeURIComponent(created.adminKey)}`;
         router.push(nextPath);
         toast({
-          title: "New match created",
-          description: "Share the viewer link for spectators.",
+          title:
+            created.storage === "local"
+              ? "Cloud unavailable — local match started"
+              : "New match created",
+          description:
+            created.storage === "local"
+              ? "Scoring is running locally on this device."
+              : "Admin link copied. Start scoring!",
         });
       } catch (e: any) {
         toast({

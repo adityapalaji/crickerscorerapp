@@ -7,6 +7,7 @@ import {
   RadioGroupItem,
 } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
+import { createMatchInCloud } from "../lib/cloudSync";
 
 function getQueryMode(): "admin" | "viewer" {
   if (typeof window === "undefined") return "admin";
@@ -86,21 +87,16 @@ export default function HomeLanding() {
                   setError(null);
                   setCreating(true);
                   try {
-                    const res = await fetch("/api/matches", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ scoreboardDisplay }),
+                    const data = await createMatchInCloud({
+                      scoreboardDisplay,
                     });
-                    if (!res.ok) {
-                      const body = await res.json().catch(() => ({}));
-                      throw new Error(body?.error || `HTTP ${res.status}`);
-                    }
-                    const data = (await res.json()) as { matchId?: string; adminKey?: string };
                     if (!data?.matchId || !data?.adminKey) {
                       throw new Error("Missing match ID or admin key");
                     }
-                    // Navigate to the match scoring page
                     const nextPath = `/match/${encodeURIComponent(data.matchId)}?mode=admin&key=${encodeURIComponent(data.adminKey)}`;
+                    if (data.storage === "local") {
+                      setError("Cloud unavailable. Started in local mode on this device; scoring will continue.");
+                    }
                     router.push(nextPath);
                   } catch (e: any) {
                     setError(e?.message || "Failed to create match");
