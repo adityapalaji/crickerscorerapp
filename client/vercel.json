@@ -1,7 +1,7 @@
 {
   "framework": "nextjs",
   "rewrites": [
-    { "source": "/((?!api/|_next/|favicon\\.png|opengraph\\.jpg).*)", "destination": "/" }
+    { "source": "/((?!api/|_next/|match/|favicon\\.png|opengraph\\.jpg).*)", "destination": "/" }
   ],
   "headers": [
     {
