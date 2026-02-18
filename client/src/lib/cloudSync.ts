@@ -1,3 +1,5 @@
+import { createDefaultMatchState } from "./matchState";
+
 export type CloudSyncStatus =
   | { phase: "idle" }
   | { phase: "saving" }
@@ -7,6 +9,19 @@ export type CloudSyncStatus =
 type CreateMatchOptions = {
   scoreboardDisplay?: "skins" | "traditional";
 };
+
+const LOCAL_STORAGE_PREFIX = "ic_scoring_match_v1:";
+
+function saveLocalMatchState(state: any) {
+  if (typeof window === "undefined") return;
+  try {
+    const payload = JSON.stringify(state);
+    localStorage.setItem(`${LOCAL_STORAGE_PREFIX}${state.matchId}`, payload);
+    localStorage.setItem(`${LOCAL_STORAGE_PREFIX}last_match_id`, state.matchId);
+  } catch {
+    // best-effort local persistence
+  }
+}
 
 export async function createMatchInCloud(options?: CreateMatchOptions) {
   try {
@@ -30,6 +45,12 @@ export async function createMatchInCloud(options?: CreateMatchOptions) {
     // Reliability-first fallback: allow admin scoring to start locally when cloud fails
     const matchId = `match_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
     const adminKey = `admin_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
+    const localState = createDefaultMatchState({
+      matchId,
+      adminKey,
+      scoreboardDisplay: options?.scoreboardDisplay,
+    });
+    saveLocalMatchState(localState);
     return {
       matchId,
       adminKey,

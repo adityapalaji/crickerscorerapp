@@ -804,11 +804,30 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
   const latestStateRef = useRef<MatchState>(state);
   const pendingCloudSyncRef = useRef(false);
   const reconnectSyncInFlightRef = useRef(false);
+  const [isOffline, setIsOffline] = useState<boolean>(() => {
+    if (typeof navigator === "undefined") return false;
+    return !navigator.onLine;
+  });
 
   useEffect(() => {
     latestLocalUpdatedAtRef.current = state.updatedAt ?? 0;
     latestStateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
 
   // Load from cloud once when opening a match link (device handoff)
   useEffect(() => {
@@ -2509,6 +2528,13 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
             </Button>
           ) : null}
         </motion.div>
+
+        {isOffline ? (
+          <div className="mt-3 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900">
+            Offline mode active. Changes are saved locally and will sync when
+            you are back online.
+          </div>
+        ) : null}
 
         <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-6">
           <div className="lg:col-span-7 space-y-3 sm:space-y-6">
