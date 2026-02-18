@@ -758,9 +758,13 @@ function ScoringApp({ matchIdFromRoute }: ScoringAppProps) {
   const [showCoinFlip, setShowCoinFlip] = useState(false);
 
   // Parse URL query parameters from Next.js router
-  const roleFromUrl =
-    (router.query.mode as Role | undefined) ?? "admin";
-  const keyFromUrl = (router.query.key as string | undefined) ?? null;
+  // Wait for router to be ready to avoid undefined query params
+  const roleFromUrl =  router.isReady
+      ? ((router.query.mode as Role | undefined) ?? "admin")
+      : "admin";
+  const keyFromUrl = router.isReady
+    ? ((router.query.key as string | undefined) ?? null)
+    : null;
   const isExplicitAdminRequest = roleFromUrl === "admin";
 
   const [state, setState] = useState<MatchState>(() => {

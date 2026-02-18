@@ -1,8 +1,5 @@
 import { useRouter } from "next/router";
-import dynamic from "next/dynamic";
-
-// Disable SSR for scoring app to prevent hydration mismatches with localStorage
-const ScoringApp = dynamic(() => import("../scoring-app"), { ssr: false });
+import ScoringApp from "../scoring-app";
 
 export default function MatchPage() {
     const router = useRouter();
